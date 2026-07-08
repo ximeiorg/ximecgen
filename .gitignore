@@ -19,3 +19,4 @@ local.properties
 /web/node_modules/
 /web/dist/
 app/src/main/jniLibs/
+/.kotlin

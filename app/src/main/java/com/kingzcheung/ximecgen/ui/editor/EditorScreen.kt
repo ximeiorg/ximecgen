@@ -18,16 +18,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.*
@@ -150,22 +154,22 @@ private fun FormEditor(
                     Spacer(Modifier.height(8.dp))
                 }
                 val meta = config.optJSONObject("metadata") ?: JSONObject()
-                Text("metadata", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-                FieldRow("metadata.app_name", "App Name", meta.optString("app_name", "Xime"), onFieldUpdate)
-                FieldRow("metadata.app_version", "App Version", meta.optString("app_version", ">=2.5.0"), onFieldUpdate)
+                Text("元数据", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+                FieldRow("metadata.app_name", "应用名称", meta.optString("app_name", "Xime"), onFieldUpdate)
+                FieldRow("metadata.app_version", "应用版本", meta.optString("app_version", ">=2.5.0"), onFieldUpdate)
 
                 val style = config.optJSONObject("style") ?: JSONObject()
-                Text("style", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-                FieldRow("style.color_scheme", "Color Scheme", style.optString("color_scheme", "lavender_purple"), onFieldUpdate)
-                FieldRow("style.font_size", "Font Size", style.optString("font_size", ""), onFieldUpdate)
+                Text("样式", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+                FieldRow("style.color_scheme", "配色方案", style.optString("color_scheme", "lavender_purple"), onFieldUpdate)
+                FieldRow("style.font_size", "字体大小", style.optString("font_size", ""), onFieldUpdate)
 
                 val kb = config.optJSONObject("keyboard") ?: JSONObject()
                 val key = kb.optJSONObject("key") ?: JSONObject()
                 val shadow = kb.optJSONObject("shadow") ?: JSONObject()
                 Text("键盘设置", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-                FieldRow("keyboard.key.corner_radius", "Corner Radius", key.optString("corner_radius", "8"), onFieldUpdate)
-                FieldBoolRow("keyboard.shadow.enabled", "Shadow Enabled", shadow.optString("enabled", "true"), onFieldUpdate)
-                FieldRow("keyboard.shadow.elevation", "Elevation", shadow.optString("elevation", "1"), onFieldUpdate)
+                FieldSliderRow("keyboard.key.corner_radius", "圆角半径", key.optString("corner_radius", "8"), 0f..20f, onFieldUpdate)
+                FieldBoolRow("keyboard.shadow.enabled", "阴影开关", shadow.optString("enabled", "true"), onFieldUpdate)
+                FieldSliderRow("keyboard.shadow.elevation", "阴影高度", shadow.optString("elevation", "1"), 0f..20f, onFieldUpdate)
 
                 Spacer(Modifier.height(32.dp))
             }
@@ -243,10 +247,11 @@ private fun ColorSchemesEditor(schemes: JSONObject) {
 
 @Composable
 private fun FieldRow(path: String, label: String, value: String, onFieldUpdate: (String, String) -> Unit) {
+    var showDialog by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onFieldUpdate(path, value) }
+            .clickable { showDialog = true }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -254,6 +259,30 @@ private fun FieldRow(path: String, label: String, value: String, onFieldUpdate: 
         Text(value, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+    if (showDialog) {
+        var input by remember { mutableStateOf(value) }
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text(label) },
+            text = {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    label = { Text("值") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onFieldUpdate(path, input)
+                    showDialog = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -268,6 +297,37 @@ private fun FieldBoolRow(path: String, label: String, value: String, onFieldUpda
     ) {
         Text(label, modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Medium)
         Switch(checked = currentBool, onCheckedChange = { onFieldUpdate(path, if (it) "true" else "false") })
+    }
+    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+}
+
+@Composable
+private fun FieldSliderRow(path: String, label: String, value: String, range: ClosedFloatingPointRange<Float>, onFieldUpdate: (String, String) -> Unit) {
+    val currentValue = value.toFloatOrNull() ?: range.start
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text("%.0f".format(currentValue), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("%.0f".format(range.start), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Slider(
+            value = currentValue,
+            onValueChange = { onFieldUpdate(path, "%.0f".format(it)) },
+            valueRange = range,
+            steps = ((range.endInclusive - range.start).toInt() - 1).coerceAtLeast(0),
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+        )
+        Text("%.0f".format(range.endInclusive), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 }

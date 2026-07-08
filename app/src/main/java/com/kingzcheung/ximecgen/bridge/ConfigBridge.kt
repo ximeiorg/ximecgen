@@ -30,7 +30,7 @@ object ConfigBridge {
         return if (nativeLoaded) {
             nativeToYaml(configJson)
         } else {
-            ""
+            fallbackToYaml(configJson)
         }
     }
 
@@ -60,7 +60,7 @@ object ConfigBridge {
         return if (nativeLoaded) {
             nativeUpdateField(configJson, fieldPath, newValue)
         } else {
-            configJson
+            fallbackUpdateField(configJson, fieldPath, newValue)
         }
     }
 
@@ -184,5 +184,93 @@ object ConfigBridge {
             put("default", "0x202020")
         })
         return arr
+    }
+
+    // Fallback: convert JSON object to YAML string
+    private fun fallbackToYaml(configJson: String): String {
+        return try {
+            val obj = JSONObject(configJson)
+            val sb = StringBuilder()
+            jsonToYaml(obj, 0, sb)
+            sb.toString()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun jsonToYaml(obj: JSONObject, indent: Int, sb: StringBuilder) {
+        val prefix = "  ".repeat(indent)
+        val keys = obj.keys().asSequence().toList()
+        for (key in keys) {
+            val value = obj.get(key)
+            sb.append(prefix).append(key).append(": ")
+            when (value) {
+                is JSONObject -> {
+                    sb.append('\n')
+                    jsonToYaml(value, indent + 1, sb)
+                }
+                is JSONArray -> {
+                    sb.append('\n')
+                    for (i in 0 until value.length()) {
+                        sb.append(prefix).append("  - ").append(value.get(i)).append('\n')
+                    }
+                }
+                is Boolean -> sb.append(if (value) "true" else "false").append('\n')
+                is Number -> {
+                    val str = value.toString()
+                    if (str.contains('.') || str.contains('e') || str.contains('E')) {
+                        sb.append(str).append('\n')
+                    } else {
+                        sb.append(value.toLong()).append('\n')
+                    }
+                }
+                is String -> {
+                    if (value.startsWith("0x") || value.startsWith(">=") || value.contains(':') || value.contains('#') || value.isEmpty()) {
+                        sb.append('"').append(value).append('"').append('\n')
+                    } else {
+                        sb.append(value).append('\n')
+                    }
+                }
+                else -> sb.append(value).append('\n')
+            }
+        }
+    }
+
+    // Fallback: update a field in the JSON by navigating dot-separated path
+    private fun fallbackUpdateField(configJson: String, fieldPath: String, newValue: String): String {
+        return try {
+            val obj = JSONObject(configJson)
+            val parts = fieldPath.split(".")
+            var current: Any = obj
+            for (i in 0 until parts.size - 1) {
+                val part = parts[i]
+                current = if (current is JSONObject) {
+                    if (current.has(part)) {
+                        current.get(part)
+                    } else {
+                        val nested = JSONObject()
+                        current.put(part, nested)
+                        nested
+                    }
+                } else {
+                    return configJson
+                }
+            }
+            val lastPart = parts.last()
+            if (current is JSONObject) {
+                val parsed: Any = when {
+                    newValue == "true" -> true
+                    newValue == "false" -> false
+                    newValue.toIntOrNull() != null -> newValue.toInt()
+                    newValue.toLongOrNull() != null -> newValue.toLong()
+                    newValue.toDoubleOrNull() != null -> newValue.toDouble()
+                    else -> newValue
+                }
+                current.put(lastPart, parsed)
+            }
+            obj.toString()
+        } catch (_: Exception) {
+            configJson
+        }
     }
 }
