@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 分享配置到 Xime 等应用时使用的缓存文件 -->
+    <cache-path name="shared" path="shared/" />
+</paths>

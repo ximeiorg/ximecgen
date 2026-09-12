@@ -8,6 +8,7 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
+/.zcode
 /build
 /captures
 .externalNativeBuild
@@ -19,4 +20,5 @@ local.properties
 /web/node_modules/
 /web/dist/
 app/src/main/jniLibs/
-/.kotlin
+/.kotlin/dist/
+/app/release

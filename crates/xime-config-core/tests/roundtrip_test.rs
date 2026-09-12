@@ -1,122 +1,234 @@
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
-use xime_config_core::model::*;
-use xime_config_core::parser;
+use xime_config_core::{ops, parser, validator};
 
-const SAMPLES_DIR: &str = "../../Xime/docs/config_examples";
+fn samples_dir() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/samples").leak()
+}
 
-const SAMPLE_YAML: &str = r#"metadata:
+fn load_sample(name: &str) -> String {
+    let path = samples_dir().join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {} 失败: {}", path.display(), e))
+}
+
+#[test]
+fn default_yaml_roundtrip_is_semantically_equal() {
+    let yaml = load_sample("xime.default.yaml");
+    let original: Value = parser::yaml_to_value(&yaml).unwrap();
+    let yaml_out = parser::value_to_yaml(&original).unwrap();
+    let reparsed: Value = parser::yaml_to_value(&yaml_out).unwrap();
+    assert_eq!(original, reparsed, "往返后配置树发生语义变化");
+}
+
+#[test]
+fn default_yaml_key_fields_are_understood() {
+    let config: Value = parser::yaml_to_value(&load_sample("xime.default.yaml")).unwrap();
+
+    // 十六进制整数字面量
+    assert_eq!(
+        config["color_schemes"]["lavender_purple"]["primary_color"].as_u64(),
+        Some(0x8F73E2)
+    );
+    // 带 alpha 的 ARGB 颜色
+    assert_eq!(
+        config["keyboard"]["colors"]["key_bg_color_dark"].as_u64(),
+        Some(0x60FF_FFFF)
+    );
+    // 浮点字段
+    assert_eq!(
+        config["keyboard"]["key"]["spacing_y"].as_f64(),
+        Some(4.25)
+    );
+    assert_eq!(
+        config["keyboard"]["shadow"]["elevation"].as_f64(),
+        Some(0.5)
+    );
+    // 行内 flow mapping 手势
+    assert_eq!(config["keyboard"]["qwerty"]["keys"]["q"]["swipe_up"], Value::String("1".into()));
+    assert_eq!(
+        config["keyboard"]["qwerty"]["keys"]["earth"]["tap"]["action"],
+        Value::String("toggle_ascii".into())
+    );
+    // 标量/对象双写的 color_scheme
+    assert_eq!(
+        config["style"]["color_scheme"]["dark"],
+        Value::String("slate_gray".into())
+    );
+}
+
+#[test]
+fn unknown_fields_survive_roundtrip() {
+    let yaml = r#"
+metadata:
   app_name: Xime
-  app_version: ">=2.5.0"
-  platform: android
-  config_version: 1
-  modified_time: "2026-07-05"
-
+  a_future_field: "未来版本新增的字段"
 style:
-  color_scheme: lavender_purple
-
+  color_scheme:
+    light: lavender_purple
+    dark: slate_gray
+    another_new_thing: 42
 keyboard:
-  key:
-    corner_radius: 8
-  shadow:
-    enabled: true
-    elevation: 1
-  qwerty:
-    button_layout: standard
-    keys:
-      q: { tap: "q", swipe_up: "1", long_press: { display: "bubble", values: ["q", "Q"] } }
-      a: { tap: "a", swipe_up: { label: "～", value: "~" }, long_press: { display: "bubble", values: ["a", "A"] } }
-      shift_l: { tap: { label: "英", action: "toggle_ascii" } }
+  some_new_section:
+    nested: [1, 2, 3]
 "#;
-
-#[test]
-fn test_parse_and_roundtrip() {
-    let config: XimeConfig = parser::parse_yaml(SAMPLE_YAML).unwrap();
-    assert_eq!(config.metadata.app_name, "Xime");
-    let keyboard = config.keyboard.as_ref().unwrap();
-    let qwerty = keyboard.qwerty.as_ref().unwrap();
-    let keys = qwerty.keys.as_ref().unwrap();
-
-    let key_q = keys.key_q.as_ref().unwrap();
-    match key_q.tap.as_ref().unwrap() {
-        GestureAction::Simple(s) => assert_eq!(s, "q"),
-        _ => panic!("expected simple gesture"),
-    }
-
-    let key_a = keys.key_a.as_ref().unwrap();
-    match key_a.swipe_up.as_ref().unwrap() {
-        GestureAction::Detailed { ref value, .. } => {
-            assert_eq!(value.as_ref().unwrap(), "~");
-        }
-        _ => panic!("expected detailed gesture"),
-    }
-
-    let key_shift = keys.key_shift_l.as_ref().unwrap();
-    match key_shift.tap.as_ref().unwrap() {
-        GestureAction::Detailed { ref label, ref action, .. } => {
-            assert_eq!(label.as_ref().unwrap(), "英");
-            assert_eq!(action.as_ref().unwrap(), "toggle_ascii");
-        }
-        _ => panic!("expected detailed gesture"),
-    }
-
-    let yaml_out = parser::to_yaml(&config).unwrap();
-    assert!(!yaml_out.is_empty());
-    let config2: XimeConfig = parser::parse_yaml(&yaml_out).unwrap();
-    assert_eq!(config2.metadata.app_name, "Xime");
+    let original: Value = parser::yaml_to_value(yaml).unwrap();
+    let yaml_out = parser::value_to_yaml(&original).unwrap();
+    let reparsed: Value = parser::yaml_to_value(&yaml_out).unwrap();
+    assert_eq!(reparsed["metadata"]["a_future_field"], Value::String("未来版本新增的字段".into()));
+    assert_eq!(reparsed["style"]["color_scheme"]["another_new_thing"], Value::Number(42.into()));
+    assert_eq!(reparsed["keyboard"]["some_new_section"]["nested"], serde_json::json!([1, 2, 3]));
 }
 
 #[test]
-fn test_validation() {
-    let config = XimeConfig {
-        metadata: Metadata {
-            app_name: String::new(),
-            app_version: String::new(),
-            platform: String::new(),
-            ..Default::default()
+fn ops_edit_gesture_end_to_end() {
+    let yaml = load_sample("xime.default.yaml");
+    let mut config: Value = parser::yaml_to_value(&yaml).unwrap();
+
+    let ops_json = r#"[
+        {"op":"set","path":"/keyboard/qwerty/keys/a/swipe_up","value":{"label":"～","action":"commit","value":"~","display":"bubble"}},
+        {"op":"set","path":"/color_schemes/lavender_purple/primary_color","value":15132390},
+        {"op":"add","path":"/keyboard/t9/side_symbols/-","value":"、"},
+        {"op":"remove","path":"/keyboard/qwerty/keys/z/swipe_down"}
+    ]"#;
+    let parsed = ops::parse_ops(ops_json).unwrap();
+    ops::apply_ops(&mut config, &parsed).unwrap();
+
+    let yaml_out = parser::value_to_yaml(&config).unwrap();
+    let reparsed: Value = parser::yaml_to_value(&yaml_out).unwrap();
+
+    assert_eq!(reparsed["keyboard"]["qwerty"]["keys"]["a"]["swipe_up"]["label"], Value::String("～".into()));
+    assert_eq!(
+        reparsed["color_schemes"]["lavender_purple"]["primary_color"].as_u64(),
+        Some(15132390)
+    );
+    let symbols = reparsed["keyboard"]["t9"]["side_symbols"].as_array().unwrap();
+    assert_eq!(symbols.last().unwrap(), &Value::String("、".into()));
+    assert!(reparsed["keyboard"]["qwerty"]["keys"]["z"].get("swipe_down").is_none());
+}
+
+#[test]
+fn ops_color_scheme_crud() {
+    let yaml = load_sample("xime.default.yaml");
+    let mut config: Value = parser::yaml_to_value(&yaml).unwrap();
+
+    // 复制一个方案 = add + 原值；重命名 = remove + add
+    let original = config["color_schemes"]["ocean_blue"].clone();
+    let ops_json = serde_json::json!([
+        {"op": "add", "path": "/color_schemes/my_scheme", "value": original},
+        {"op": "remove", "path": "/color_schemes/ocean_blue"}
+    ])
+    .to_string();
+    ops::apply_ops(&mut config, &ops::parse_ops(&ops_json).unwrap()).unwrap();
+
+    assert!(config["color_schemes"].get("ocean_blue").is_none());
+    assert_eq!(config["color_schemes"]["my_scheme"]["name"], Value::String("海洋蔚蓝".into()));
+
+    let result = validator::validate(&config);
+    assert!(result.valid, "增删方案后应仍然合法: {:?}", result.errors);
+}
+
+#[test]
+fn validate_default_yaml_has_no_errors() {
+    let config: Value = parser::yaml_to_value(&load_sample("xime.default.yaml")).unwrap();
+    let result = validator::validate(&config);
+    assert!(result.valid, "默认配置不应有错误: {:?}", result.errors);
+    assert!(result.warnings.is_empty(), "默认配置不应有警告: {:?}", result.warnings);
+}
+
+#[test]
+fn validate_catches_schema_violations() {
+    let config: Value = serde_json::json!({
+        "metadata": {"app_name": "", "app_version": "abc", "config_version": 1},
+        "style": {"dark_mode": 5, "color_scheme": {"light": ""}},
+        "xime_index": {"base_urls": ["https://example.com"]},
+        "color_schemes": {
+            "bad": {"name": "坏例子", "primary_color": "0xFF0000"},
+            "grad": {"name": "渐变", "keyboard_background": {"type": "gradient", "colors": [1]}},
+            "img": {"name": "图片", "keyboard_background": {"type": "image", "src": "a.jpg", "fit": "zoom", "overlay_alpha": 2.0}},
+            "dyn": {"name": "动态", "dynamic_color": true, "primary_color": "可以是任意"}
         },
-        xime_index: None,
-        style: None,
-        color_schemes: None,
-        keyboard: None,
-    };
-    let result = parser::validate_all_fields(&config);
-    let app_name_err = result.iter().find(|e| e.path == "metadata.app_name");
-    assert!(app_name_err.is_some(), "expected validation error for empty app_name");
+        "keyboard": {
+            "colors": {"key_bg_color": "白色"},
+            "shadow": {"enabled": "yes"},
+            "qwerty": {
+                "button_layout": "fancy",
+                "layout": {"rows": [["q", "w"], ["a"]]},
+                "keys": {"q": {"tap": {"action": "fly_to_moon"}}, "a": {"long_press": {"display": "sideways", "values": ["a"]}}}
+            }
+        }
+    });
+
+    let result = validator::validate(&config);
+    let paths: Vec<&str> = result.errors.iter().map(|e| e.path.as_str()).collect();
+
+    for expected in [
+        "metadata/app_name",
+        "metadata/app_version",
+        "style/dark_mode",
+        "style/color_scheme/light",
+        "color_schemes/bad/primary_color",
+        "color_schemes/grad/keyboard_background/colors",
+        "color_schemes/img/keyboard_background/fit",
+        "color_schemes/img/keyboard_background/overlay_alpha",
+        "keyboard/colors/key_bg_color",
+        "keyboard/shadow/enabled",
+        "keyboard/qwerty/button_layout",
+        "keyboard/qwerty/keys/a/long_press/display",
+    ] {
+        assert!(paths.contains(&expected), "缺少预期错误 {}，实际: {:?}", expected, paths);
+    }
+
+    // dynamic_color: true 的方案跳过静态颜色检查
+    assert!(!paths.iter().any(|p| p.contains("color_schemes/dyn")));
+    // 未知动作按 Xime 的行为（只显示不执行）降级为警告
+    assert!(result.warnings.iter().any(|w| w.contains("fly_to_moon") && w.contains("只显示不执行")));
+    // 行内未定义的键与 URL 末尾斜杠是警告
+    assert!(result.warnings.iter().any(|w| w.contains("未在 keys 中定义")));
+    assert!(result.warnings.iter().any(|w| w.contains("末尾建议带 /")));
+    // ARGB 颜色（带 alpha）不应被判为非法
+    let mut ok_config = serde_json::json!({
+        "metadata": {"app_name": "Xime"},
+        "keyboard": {"colors": {"key_bg_color_dark": 0x60FF_FFFFu64}, "qwerty": {"keys": {}}}
+    });
+    let ok = validator::validate(&mut ok_config);
+    assert!(ok.valid, "ARGB 颜色应合法: {:?}", ok.errors);
 }
 
 #[test]
-fn test_parse_all_examples() {
-    let sample_dir = Path::new(SAMPLES_DIR);
-    if !sample_dir.exists() {
-        eprintln!("Samples dir {} not found, skipping", SAMPLES_DIR);
-        return;
+fn all_vendored_samples_roundtrip() {
+    let dir = samples_dir();
+    let mut names: Vec<_> = fs::read_dir(dir)
+        .expect("samples 目录存在")
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".yaml"))
+        .collect();
+    names.sort();
+
+    assert!(names.len() >= 8, "应至少有 8 个样本，实际: {:?}", names);
+
+    for name in names {
+        let yaml = load_sample(&name);
+        let original: Value = parser::yaml_to_value(&yaml)
+            .unwrap_or_else(|e| panic!("{}: 解析失败: {}", name, e));
+        let yaml_out = parser::value_to_yaml(&original)
+            .unwrap_or_else(|e| panic!("{}: 序列化失败: {}", name, e));
+        let reparsed: Value = parser::yaml_to_value(&yaml_out)
+            .unwrap_or_else(|e| panic!("{}: 回读失败: {}\n--- 生成的 YAML ---\n{}", name, e, yaml_out));
+        assert_eq!(original, reparsed, "{}: 往返语义不等价", name);
+
+        let result = validator::validate(&reparsed);
+        assert!(result.valid, "{}: 校验失败: {:?}", name, result.errors);
     }
+}
 
-    let files = [
-        "xime.cangjie.yaml",
-        "xime.flypy.yaml",
-        "xime.full_example.yaml",
-        "xime.shortcut.yaml",
-        "xime.theme_example.yaml",
-        "xime.wubi_compact.yaml",
-    ];
-
-    for fname in &files {
-        let path = sample_dir.join(fname);
-        let yaml_str = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
-
-        let config: XimeConfig = parser::parse_yaml(&yaml_str)
-            .unwrap_or_else(|e| panic!("Failed to parse {}: {}", fname, e));
-
-        assert!(!config.metadata.app_name.is_empty(), "{}: app_name empty", fname);
-
-        // Verify round-trip
-        let yaml_out = parser::to_yaml(&config).unwrap();
-        assert!(!yaml_out.is_empty(), "{}: to_yaml produced empty output", fname);
-
-        let _config2: XimeConfig = parser::parse_yaml(&yaml_out)
-            .unwrap_or_else(|e| panic!("{}: round-trip parse failed: {}", fname, e));
+#[test]
+fn field_descriptors_cover_sections() {
+    let descriptors = parser::get_field_descriptors();
+    let sections: std::collections::HashSet<_> = descriptors.iter().map(|d| d.section.as_str()).collect();
+    for expected in ["metadata", "style", "keyboard_colors", "keyboard_key", "keyboard_shadow", "keyboard_fonts", "keyboard_layout", "color_scheme"] {
+        assert!(sections.contains(&expected), "描述符缺少分区 {}", expected);
     }
+    // 配色方案字段使用 {id} 占位
+    assert!(descriptors.iter().any(|d| d.path == "/color_schemes/{id}/primary_color"));
 }

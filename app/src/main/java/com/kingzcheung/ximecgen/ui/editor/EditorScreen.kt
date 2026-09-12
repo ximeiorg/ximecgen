@@ -2,334 +2,392 @@ package com.kingzcheung.ximecgen.ui.editor
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.kingzcheung.ximecgen.ui.editor.components.GestureEditorSheet
+import com.kingzcheung.ximecgen.ui.preview.KeyboardPreview
+import com.kingzcheung.ximecgen.ui.preview.buildPreviewData
+import com.kingzcheung.ximecgen.vm.Ops
+import com.kingzcheung.ximecgen.vm.ConfigUiState
+import com.kingzcheung.ximecgen.vm.ConfigViewModel
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
+
+// 窄屏/大字体下四个全称放不下：用 ScrollableTabRow 保证任何屏宽都不截断，
+// 宽屏时四个 tab 仍然全部可见
+private val TAB_TITLES = listOf("常规", "主题配色", "键盘外观", "布局与手势")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
-    configJson: String,
-    validationJson: String,
-    onFieldUpdate: (String, String) -> Unit,
-    onAddColor: ((String, String) -> Unit)? = null,
-    onRemoveColor: ((String) -> Unit)? = null,
+    state: ConfigUiState,
+    vm: ConfigViewModel,
+    onBack: () -> Unit,
+    onSave: () -> Unit,
+    onExport: () -> Unit,
+    onShare: () -> Unit,
 ) {
-    val validationResult = remember(validationJson) {
-        try { JSONObject(validationJson) } catch (_: Exception) { null }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var previewDark by rememberSaveable { mutableStateOf(false) }
+    var editingGestureKey by remember { mutableStateOf<String?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.loadError) {
+        state.loadError?.let {
+            snackbar.showSnackbar(it)
+            vm.clearLoadError()
+        }
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
-                title = { Text("Xime Config Generator") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                ),
+            Column {
+                TopAppBar(
+                title = {
+                    Column {
+                        Text(state.fileName ?: "新建配置", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            when {
+                                state.dirty -> "未保存"
+                                state.internalName != null -> "已保存到配置库"
+                                state.fileUri != null -> "已导出到外部文件"
+                                else -> state.templateSource ?: "未保存"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (state.dirty) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
+                },
+                actions = {
+                    // 校验状态
+                    BadgedBox(badge = {
+                        val errCount = state.validation.errors.size
+                        if (errCount > 0) Badge { Text("$errCount") }
+                    }) {
+                        Icon(
+                            if (state.validation.valid) Icons.Default.CheckCircle else Icons.Default.Error,
+                            contentDescription = if (state.validation.valid) "校验通过" else "校验有错误",
+                            tint = if (state.validation.valid) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    IconButton(onClick = onShare) {
+                        Icon(Icons.Default.Share, contentDescription = "分享到 Xime")
+                    }
+                    IconButton(onClick = onExport) {
+                        Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "导出到文件")
+                    }
+                    IconButton(onClick = onSave) {
+                        Icon(Icons.Default.Save, contentDescription = "保存到配置库")
+                    }
+                },
+                )
+                ScrollableTabRow(
+                    selectedTabIndex = selectedTab,
+                    edgePadding = 8.dp,
+                ) {
+                    TAB_TITLES.forEachIndexed { i, title ->
+                        Tab(selected = selectedTab == i, onClick = { selectedTab = i }, text = { Text(title) })
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        BoxWithConstraints(Modifier.padding(padding).fillMaxSize()) {
+            val wide = maxWidth >= 600.dp
+            if (wide) {
+                // 宽屏：左编辑右实时预览（M3 adaptive two-pane）
+                Row {
+                    EditorColumn(state, vm, selectedTab, Modifier.weight(0.58f).fillMaxHeight())
+                    PreviewPane(
+                        state = state,
+                        dark = previewDark,
+                        onDarkChange = { previewDark = it },
+                        onKeyClick = { editingGestureKey = it },
+                        modifier = Modifier.weight(0.42f).fillMaxHeight(),
+                    )
+                }
+            } else {
+                Box(Modifier.fillMaxSize()) {
+                    EditorColumn(state, vm, selectedTab, Modifier.fillMaxSize())
+                    // 窄屏：悬浮球 + 预览浮层
+                    FloatingPreview(
+                        state = state,
+                        dark = previewDark,
+                        onDarkChange = { previewDark = it },
+                        onKeyClick = { editingGestureKey = it },
+                    )
+                }
+            }
+        }
+    }
+
+    // 预览点按按键 → 手势编辑（中文 26 键；英文键盘请到布局与手势页）
+    editingGestureKey?.let { keyId ->
+        val config = remember(state.configJson) { JSONObject(state.configJson) }
+        val binding = config.optJSONObject("keyboard")?.optJSONObject("qwerty")
+            ?.optJSONObject("keys")?.optJSONObject(keyId)
+        GestureEditorSheet(
+            keyId = keyId,
+            binding = binding,
+            onDismiss = { editingGestureKey = null },
+            onSave = { bindingOut ->
+                vm.dispatch(
+                    JSONArray().put(Ops.set("/keyboard/qwerty/keys/$keyId", bindingOut))
+                )
+                editingGestureKey = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun EditorColumn(
+    state: ConfigUiState,
+    vm: ConfigViewModel,
+    selectedTab: Int,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        ValidationBanner(state)
+        when (selectedTab) {
+            0 -> GeneralTab(state, vm)
+            1 -> ThemeTab(state, vm)
+            2 -> AppearanceTab(state, vm)
+            else -> LayoutTab(state, vm)
+        }
+    }
+}
+
+@Composable
+private fun ValidationBanner(state: ConfigUiState) {
+    val v = state.validation
+    if (!v.valid) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text(
+                    "配置有 ${v.errors.size} 个错误",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                v.errors.take(3).forEach {
+                    Text(
+                        "${it.path}: ${it.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+                if (v.errors.size > 3) {
+                    Text(
+                        "…共 ${v.errors.size} 项",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+        }
+    } else if (v.warnings.isNotEmpty()) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("提示", style = MaterialTheme.typography.labelLarge)
+                v.warnings.take(2).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                if (v.warnings.size > 2) {
+                    Text("…共 ${v.warnings.size} 项", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+/** 常驻预览面板（宽屏右栏 / 全屏预览页共用）。 */
+@Composable
+fun PreviewPane(
+    state: ConfigUiState,
+    dark: Boolean,
+    onDarkChange: (Boolean) -> Unit,
+    onKeyClick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    schemaName: String = "五笔拼音",
+) {
+    Column(modifier.padding(8.dp)) {
+        DarkToggle(dark, onDarkChange)
+        val config = remember(state.configJson) { JSONObject(state.configJson) }
+        val preview = remember(state.configJson, dark) { buildPreviewData(config, dark) }
+        Card(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            KeyboardPreview(
+                preview = preview,
+                dark = dark,
+                modifier = Modifier.fillMaxSize(),
+                schemaName = schemaName,
+                onKeyClick = onKeyClick,
             )
         }
-    ) { padding ->
-        FormEditor(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            configJson = configJson,
-            onFieldUpdate = onFieldUpdate,
-            onAddColor = onAddColor,
-            onRemoveColor = onRemoveColor,
-            errors = validationResult?.optJSONArray("errors") ?: JSONArray(),
-            warnings = validationResult?.optJSONArray("warnings") ?: JSONArray(),
-        )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FormEditor(
-    modifier: Modifier = Modifier,
-    configJson: String,
-    onFieldUpdate: (String, String) -> Unit,
-    onAddColor: ((String, String) -> Unit)? = null,
-    onRemoveColor: ((String) -> Unit)? = null,
-    errors: JSONArray,
-    warnings: JSONArray,
-) {
-    val config = remember(configJson) {
-        try { JSONObject(configJson) } catch (_: Exception) { JSONObject() }
+fun DarkToggle(dark: Boolean, onDarkChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    SingleChoiceSegmentedButtonRow(modifier) {
+        listOf(false to "浅色", true to "深色").forEachIndexed { i, (v, label) ->
+            SegmentedButton(
+                selected = dark == v,
+                onClick = { onDarkChange(v) },
+                shape = SegmentedButtonDefaults.itemShape(i, 2),
+            ) { Text(label) }
+        }
     }
-    var isDark by remember { mutableStateOf(false) }
-    val visualConfig = remember(config, isDark) { configToVisualConfig(config, isDark) }
-    val keyboard = config.optJSONObject("keyboard")
-    val qwerty = keyboard?.optJSONObject("qwerty") ?: keyboard?.optJSONObject("qwerty_en")
+}
 
-    var tab by remember { mutableStateOf(0) }
+/**
+ * 悬浮球 + 可展开预览浮层（纯应用内浮层，无需系统悬浮窗权限）。
+ * 悬浮球可拖动，显示当前主题主色；点击展开实时预览卡片。
+ */
+@Composable
+fun FloatingPreview(
+    state: ConfigUiState,
+    dark: Boolean,
+    onDarkChange: (Boolean) -> Unit,
+    onKeyClick: (String) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val screenW = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val screenH = with(density) { configuration.screenHeightDp.dp.toPx() }
+    val ballSizePx = with(density) { 52.dp.toPx() }
 
-    Column(modifier = modifier) {
-        // Sticky keyboard preview
-        Surface(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+
+    if (!expanded) {
+        val config = remember(state.configJson) { JSONObject(state.configJson) }
+        val preview = remember(state.configJson) { buildPreviewData(config, dark) }
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        (screenW - ballSizePx - 40f + offsetX).roundToInt(),
+                        (screenH * 0.62f + offsetY).roundToInt(),
+                    )
+                }
+                .shadow(6.dp, CircleShape)
+                .clip(CircleShape)
+                .size(52.dp)
+                .background(preview.primary)
+                .pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        offsetX += dragAmount.x
+                        offsetY += dragAmount.y
+                    }
+                }
+                .clickable { expanded = true },
+            contentAlignment = Alignment.Center,
         ) {
-            Column(modifier = Modifier.padding(8.dp)) {
+            Text("预", color = MaterialTheme.colorScheme.onPrimary)
+        }
+    } else {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+                .shadow(12.dp, RoundedCornerShape(20.dp)),
+            shape = RoundedCornerShape(20.dp),
+        ) {
+            Column {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("实时预览", style = MaterialTheme.typography.titleSmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        FilterChip(selected = !isDark, onClick = { isDark = false }, label = { Text("浅色", fontSize = 11.sp) })
-                        FilterChip(selected = isDark, onClick = { isDark = true }, label = { Text("深色", fontSize = 11.sp) })
+                    DarkToggle(dark, onDarkChange)
+                    Box(Modifier.weight(1f))
+                    IconButton(onClick = { expanded = false }) {
+                        Icon(Icons.Default.Close, contentDescription = "收起预览")
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-                KeyboardVisualizer(config = visualConfig, qwertyKeys = qwerty?.optJSONObject("keys"))
-            }
-        }
-
-        // Tab row below preview
-        val tabTitles = listOf("常规", "主题色", "键盘颜色", "键盘设置")
-        TabRow(selectedTabIndex = tab) {
-            tabTitles.forEachIndexed { i, title ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
-            }
-        }
-
-        // Tab content
-        val scrollState = rememberScrollState()
-        when (tab) {
-            0 -> Column(modifier = Modifier.weight(1f).verticalScroll(scrollState).padding(horizontal = 12.dp)) {
-                if (errors.length() > 0 || warnings.length() > 0) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            for (i in 0 until errors.length()) {
-                                Text("[${errors.getJSONObject(i).optString("severity", "error")}] ${errors.getJSONObject(i).optString("path")}: ${errors.getJSONObject(i).optString("message")}", fontSize = 12.sp)
-                            }
-                            for (i in 0 until warnings.length()) {
-                                Text("[warning] ${warnings.getJSONObject(i).optString("path")}: ${warnings.getJSONObject(i).optString("message")}", fontSize = 12.sp)
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-                val meta = config.optJSONObject("metadata") ?: JSONObject()
-                Text("元数据", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-                FieldRow("metadata.app_name", "应用名称", meta.optString("app_name", "Xime"), onFieldUpdate)
-                FieldRow("metadata.app_version", "应用版本", meta.optString("app_version", ">=2.5.0"), onFieldUpdate)
-
-                val style = config.optJSONObject("style") ?: JSONObject()
-                Text("样式", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-                FieldRow("style.color_scheme", "配色方案", style.optString("color_scheme", "lavender_purple"), onFieldUpdate)
-                FieldRow("style.font_size", "字体大小", style.optString("font_size", ""), onFieldUpdate)
-
-                val kb = config.optJSONObject("keyboard") ?: JSONObject()
-                val key = kb.optJSONObject("key") ?: JSONObject()
-                val shadow = kb.optJSONObject("shadow") ?: JSONObject()
-                Text("键盘设置", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
-                FieldSliderRow("keyboard.key.corner_radius", "圆角半径", key.optString("corner_radius", "8"), 0f..20f, onFieldUpdate)
-                FieldBoolRow("keyboard.shadow.enabled", "阴影开关", shadow.optString("enabled", "true"), onFieldUpdate)
-                FieldSliderRow("keyboard.shadow.elevation", "阴影高度", shadow.optString("elevation", "1"), 0f..20f, onFieldUpdate)
-
-                Spacer(Modifier.height(32.dp))
-            }
-            1 -> Column(modifier = Modifier.weight(1f).verticalScroll(scrollState).padding(horizontal = 12.dp)) {
-                ColorSchemesEditor(config.optJSONObject("color_schemes") ?: JSONObject())
-                Spacer(Modifier.height(32.dp))
-            }
-            2 -> Column(modifier = Modifier.weight(1f).verticalScroll(scrollState)) {
-                val colors = config.optJSONObject("keyboard")?.optJSONObject("colors") ?: JSONObject()
-                ColorGridEditor(
-                    colorsJson = colors,
-                    onAddColor = { key, value -> onAddColor?.invoke(key, value) ?: onFieldUpdate("keyboard.colors.$key", value) },
-                    onUpdateColor = { key, value -> onFieldUpdate("keyboard.colors.$key", value) },
-                    onRemoveColor = { key -> onRemoveColor?.invoke(key) },
+                val config = remember(state.configJson) { JSONObject(state.configJson) }
+                val preview = remember(state.configJson, dark) { buildPreviewData(config, dark) }
+                KeyboardPreview(
+                    preview = preview,
+                    dark = dark,
+                    modifier = Modifier.fillMaxWidth().height(280.dp),
+                    onKeyClick = onKeyClick,
                 )
-                Spacer(Modifier.height(32.dp))
-            }
-            3 -> Column(modifier = Modifier.weight(1f).verticalScroll(scrollState).padding(horizontal = 12.dp)) {
-                val qwertyData = keyboard?.optJSONObject("qwerty") ?: keyboard?.optJSONObject("qwerty_en")
-                Text("手势绑定", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
-                if (qwertyData != null) {
-                    val keys = qwertyData.optJSONObject("keys") ?: JSONObject()
-                    val keyNames = keys.keys().asSequence().sorted().toList()
-                    if (keyNames.isEmpty()) {
-                        Text("暂无手势配置", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        keyNames.forEach { keyName ->
-                            val gesture = keys.optJSONObject(keyName) ?: return@forEach
-                            FieldRow("qwerty_key_$keyName", keyName, gesture.toString(), onFieldUpdate)
-                        }
-                    }
-                } else {
-                    Text("未配置手势数据", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Spacer(Modifier.height(32.dp))
             }
         }
     }
 }
-
-@Composable
-private fun ColorSchemesEditor(schemes: JSONObject) {
-    val keys = remember(schemes) { schemes.keys().asSequence().toList() }
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            if (keys.isEmpty()) {
-                Text("无颜色方案", fontSize = 13.sp)
-            } else {
-                keys.forEach { key ->
-                    val scheme = schemes.optJSONObject(key) ?: return@forEach
-                    val color = try {
-                        val hex = scheme.optString("primary_color", "0x000000").trimStart('#', ' ').removePrefix("0x").removePrefix("0X")
-                        Color(0xFF000000 or hex.toLong(16))
-                    } catch (_: Exception) { Color.Gray }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(color))
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(scheme.optString("name", key), fontWeight = FontWeight.Medium)
-                            Text("primary_color: ${scheme.optString("primary_color", "")}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    if (key != keys.last()) HorizontalDivider()
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FieldRow(path: String, label: String, value: String, onFieldUpdate: (String, String) -> Unit) {
-    var showDialog by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { showDialog = true }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Medium)
-        Text(value, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-    if (showDialog) {
-        var input by remember { mutableStateOf(value) }
-        AlertDialog(
-            onDismissRequest = { showDialog = false },
-            title = { Text(label) },
-            text = {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    label = { Text("值") },
-                    singleLine = true,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onFieldUpdate(path, input)
-                    showDialog = false
-                }) { Text("确定") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDialog = false }) { Text("取消") }
-            },
-        )
-    }
-}
-
-@Composable
-private fun FieldBoolRow(path: String, label: String, value: String, onFieldUpdate: (String, String) -> Unit) {
-    val currentBool = value == "true"
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onFieldUpdate(path, if (currentBool) "false" else "true") }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Medium)
-        Switch(checked = currentBool, onCheckedChange = { onFieldUpdate(path, if (it) "true" else "false") })
-    }
-    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-}
-
-@Composable
-private fun FieldSliderRow(path: String, label: String, value: String, range: ClosedFloatingPointRange<Float>, onFieldUpdate: (String, String) -> Unit) {
-    val currentValue = value.toFloatOrNull() ?: range.start
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Medium)
-        Text("%.0f".format(currentValue), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("%.0f".format(range.start), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Slider(
-            value = currentValue,
-            onValueChange = { onFieldUpdate(path, "%.0f".format(it)) },
-            valueRange = range,
-            steps = ((range.endInclusive - range.start).toInt() - 1).coerceAtLeast(0),
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-        )
-        Text("%.0f".format(range.endInclusive), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-}
-
-

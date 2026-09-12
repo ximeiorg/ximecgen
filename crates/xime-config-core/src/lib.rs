@@ -1,4 +1,5 @@
 pub mod model;
+pub mod ops;
 pub mod parser;
 pub mod validator;
 

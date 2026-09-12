@@ -10,6 +10,8 @@
     "wasm": "wasm-pack build ../crates/xime-config-core --target web --out-dir src/pkg --out-name xime_config_core"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "monaco-editor": "^0.56.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
