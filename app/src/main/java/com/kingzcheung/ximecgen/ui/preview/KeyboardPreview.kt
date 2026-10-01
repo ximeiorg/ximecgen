@@ -136,12 +136,14 @@ fun buildPreviewData(configJson: JSONObject, dark: Boolean, keyboardId: String =
         }
     } else {
         val kbBg = schemeColor("keyboard_bg_color") ?: keyboardColor("keyboard_bg_color")
+        // 深色回退链：scheme → colors → 浅色值 → 内置深灰
+        val kbBgDark: Color = schemeColor("keyboard_bg_color_dark")?.toColor()
+            ?: keyboardColor("keyboard_bg_color_dark")?.toColor()
+            ?: kbBg?.toColor()
+            ?: Color(0xFF202125)
         background = PreviewBackground(
             light = listOf(kbBg?.toColor() ?: Color(0xFFE3E4E8)),
-            dark = listOf(
-                schemeColor("keyboard_bg_color_dark")?.toColor()
-                    ?: if (kbBg != null) kbBg.toColor() else Color(0xFF202125)
-            ),
+            dark = listOf(kbBgDark),
         )
     }
 
@@ -234,11 +236,18 @@ private fun JSONObject.optColorsArray(name: String): List<Color> {
 private fun gestureLabel(v: Any?): String? = when (v) {
     is String -> v
     is JSONObject -> sequenceOf("label", "value").mapNotNull { k ->
-        v.optString(k, "").ifEmpty { null }
-    }.firstOrNull()
+        when (val lv = v.opt(k)) {
+            // label 支持数组（多行显示），与 Xime 解析一致：join("\n") 后取首行作键帽提示
+            is org.json.JSONArray -> (0 until lv.length())
+                .mapNotNull { lv.opt(it)?.toString() }
+                .joinToString("\n").ifEmpty { null }
+            else -> lv?.toString()?.ifEmpty { null }
+        }
+    }.firstOrNull()?.lineSequence()?.firstOrNull { it.isNotBlank() }
     else -> null
 }
 
+/** 手势对象是否为 {use: 预设名} 引用（无 label/value，键面显示键名）。 */
 private fun gestureDisplay(v: Any?): String? = (v as? JSONObject)?.optString("display", "")?.ifEmpty { null }
 
 /** 6 位 RGB（0xRRGGBB）补不透明 alpha；8 位 ARGB（0xAARRGGBB）原样使用。 */

@@ -3,15 +3,38 @@
 use crate::model::{ValidationResult, ValidationError};
 use serde_json::Value;
 
-/// 手势动作枚举（与 Xime 的 GestureAction.fromValue 对应）。
+/// 手势动作枚举（与 Xime 3.0 的 GestureAction / KeyActionRegistry 对应）。
 pub const GESTURE_ACTIONS: &[&str] = &[
-    "commit", "command", "select_all", "copy", "cut", "paste",
+    "commit", "send_rime", "command", "select_all", "copy", "cut", "paste",
     "line_start", "line_end", "undo", "none", "repeat",
     "switch_route", "toggle_ascii", "delete", "toggle_symbols",
+    "enter", "newline", "space", "repeat_space",
+    "clear_all", "undo_clear", "toggle_shift", "voice",
 ];
 
-/// command 动作可用的命令值。
-pub const COMMAND_VALUES: &[&str] = &["clear_composition", "show_ime_picker"];
+/// command 动作可用的命令值（Xime 3.0：键盘按键路由命令）。
+pub const COMMAND_VALUES: &[&str] = &[
+    "clear_composition", "show_ime_picker",
+    "shift_single", "shift_caps", "toggle_shift",
+    "mode_change", "mode_change_number", "mode_change_common_symbol",
+];
+
+/// 特化键盘（t9 等）内置键 id：组件与行为内置、无需在 keys 中定义
+/// （功能键 + 九键数字键 "0"~"9"，未配置时走内置行为；shift/comma/mode_change
+/// 为标准功能键，3.0 起在 keys 定义，旧配置缺省时同样走内置行为）。
+pub const BUILTIN_FUNCTION_KEYS: &[&str] = &[
+    "candidates", "symbol", "number", "space", "earth", "delete", "clear", "enter",
+    "shift", "comma", "mode_change",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+];
+
+/// switch_route 可用的面板路由值。
+pub const SWITCH_ROUTE_VALUES: &[&str] = &["emoji", "symbol", "clipboard"];
+
+/// 手势类型（键级字段）。Xime 3.0 支持点按/双击/长按/四向滑动/列宽。
+pub const GESTURE_FIELDS: &[&str] = &[
+    "tap", "double_tap", "long_press", "swipe_up", "swipe_down", "swipe_left", "swipe_right",
+];
 
 const DISPLAY_MODES: &[&str] = &["key", "bubble", "both"];
 const BACKGROUND_FITS: &[&str] = &["cover", "contain", "fill", "fit_width", "fit_height", "none"];
@@ -365,6 +388,54 @@ fn validate_keyboard(config: &Value, errors: &mut Vec<ValidationError>, warnings
         return;
     };
 
+    // ── keyboard.actions：可复用动作预设（手势对象 {use: 预设名} 引用）──
+    // 未定义 actions 时 presets 为空表——手势里的 use 引用一律无法解析，同样要告警
+    let mut presets: Vec<String> = Vec::new();
+    if let Some(actions) = kb.get("actions") {
+        match actions.as_object() {
+            Some(map) => {
+                presets = map.keys().cloned().collect();
+                for (name, def) in map {
+                    validate_gesture(&format!("keyboard/actions/{}", name), def, errors, warnings);
+                }
+            }
+            None => errors.push(err("keyboard/actions", "actions 必须是映射（预设名 → 动作定义）")),
+        }
+    }
+    // use 引用存在性：逐键盘段检查手势里的 {use: xxx}
+    {
+        for layout_name in ["qwerty", "qwerty_en", "qwerty_14", "qwerty_17", "qwerty_18", "t9", "stroke"] {
+            let Some(keys) = kb.get(layout_name).and_then(|l| l.get("keys")).and_then(Value::as_object) else {
+                continue;
+            };
+            for (key_id, binding) in keys {
+                let Some(bind_obj) = binding.as_object() else { continue };
+                for slot in ["tap", "double_tap", "swipe_up", "swipe_down", "swipe_left", "swipe_right"] {
+                    if let Some(use_name) = bind_obj.get(slot).and_then(|g| g.get("use")).and_then(Value::as_str) {
+                        if !presets.iter().any(|n| n == use_name) {
+                            warn(warnings, format!(
+                                "keyboard/{}/keys/{}/{}：引用了未知动作预设 \"{}\"（keyboard.actions 未定义），该手势将不生效",
+                                layout_name, key_id, slot, use_name
+                            ));
+                        }
+                    }
+                }
+                if let Some(values) = binding.get("long_press").and_then(|lp| lp.get("values")).and_then(Value::as_array) {
+                    for (i, item) in values.iter().enumerate() {
+                        if let Some(use_name) = item.get("use").and_then(Value::as_str) {
+                            if !presets.iter().any(|n| n == use_name) {
+                                warn(warnings, format!(
+                                    "keyboard/{}/keys/{}/long_press/values/{}：引用了未知动作预设 \"{}\"，该项不生效",
+                                    layout_name, key_id, i, use_name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
         if let Some(colors) = kb.get("colors") {
             if let Some(map) = colors.as_object() {
                 for &field in KEYBOARD_COLOR_FIELDS {
@@ -436,7 +507,9 @@ fn validate_keyboard(config: &Value, errors: &mut Vec<ValidationError>, warnings
         }
     }
 
-    for layout_name in ["qwerty", "qwerty_en"] {
+    // Xime 3.0 布局 section：qwerty / qwerty_en 为标准布局；其余为特化键盘，
+    // 均含 schemas（方案绑定）、layout.rows（t9 另有 left/right 列）与 keys（按键级覆盖）
+    for layout_name in ["qwerty", "qwerty_en", "qwerty_14", "qwerty_17", "qwerty_18", "t9", "stroke", "handwriting", "number", "symbol", "comma_period"] {
         if let Some(layout) = kb.get(layout_name) {
             validate_layout(&format!("keyboard/{}", layout_name), layout, errors, warnings);
         }
@@ -445,18 +518,18 @@ fn validate_keyboard(config: &Value, errors: &mut Vec<ValidationError>, warnings
         warn(warnings, "keyboard 未定义 qwerty / qwerty_en 布局");
     }
 
-    if let Some(t9) = kb.get("t9") {
-        if let Some(obj) = t9.as_object() {
-            if let Some(symbols) = obj.get("side_symbols") {
+    for side_name in ["t9", "stroke"] {
+        if let Some(kb_section) = kb.get(side_name).and_then(|s| s.as_object()) {
+            if let Some(symbols) = kb_section.get("side_symbols") {
                 match symbols.as_array() {
                     Some(list) => {
                         for (i, s) in list.iter().enumerate() {
                             if s.as_str().is_none() {
-                                errors.push(err(&format!("keyboard/t9/side_symbols/{}", i), "快捷符号必须是字符串"));
+                                errors.push(err(&format!("keyboard/{}/side_symbols/{}", side_name, i), "快捷符号必须是字符串"));
                             }
                         }
                     }
-                    None => errors.push(err("keyboard/t9/side_symbols", "side_symbols 必须是字符串数组")),
+                    None => errors.push(err(&format!("keyboard/{}/side_symbols", side_name), "side_symbols 必须是字符串数组")),
                 }
             }
         }
@@ -485,6 +558,20 @@ fn validate_layout(prefix: &str, layout: &Value, errors: &mut Vec<ValidationErro
         }
     }
 
+    // schemas：声明使用此布局的输入方案（schema_id 数组），可选
+    if let Some(schemas) = obj.get("schemas") {
+        match schemas.as_array() {
+            Some(list) => {
+                for (i, s) in list.iter().enumerate() {
+                    if s.as_str().map(|v| !v.is_empty()) != Some(true) {
+                        errors.push(err(&format!("{}/schemas/{}", prefix, i), "schema id 必须是非空字符串"));
+                    }
+                }
+            }
+            None => errors.push(err(&format!("{}/schemas", prefix), "schemas 必须是字符串数组")),
+        }
+    }
+
     let mut defined_keys: Option<Vec<String>> = None;
     if let Some(keys) = obj.get("keys") {
         match keys.as_object() {
@@ -499,8 +586,8 @@ fn validate_layout(prefix: &str, layout: &Value, errors: &mut Vec<ValidationErro
     }
 
     if let Some(rows) = obj.get("layout").and_then(|l| l.get("rows")).and_then(Value::as_array) {
-        if rows.len() > 3 {
-            warn(warnings, format!("{}/layout/rows 超过 3 行（第 4 行不受布局控制，多出的行会被忽略）", prefix));
+        if rows.len() > 5 {
+            warn(warnings, format!("{}/layout/rows 超过 5 行，多出的行会被忽略", prefix));
         }
         for (ri, row) in rows.iter().enumerate() {
             let Some(key_ids) = row.as_array() else {
@@ -508,10 +595,22 @@ fn validate_layout(prefix: &str, layout: &Value, errors: &mut Vec<ValidationErro
                 continue;
             };
             for (ki, id) in key_ids.iter().enumerate() {
-                match id.as_str() {
-                    Some(s) if !s.is_empty() => {
+                match id {
+                    // Xime 3.0 支持子数组：[[q, w], ...] 表示合并键（键 id 为组内字母拼接）
+                    Value::Array(group) => {
+                        if group.is_empty() {
+                            errors.push(err(&format!("{}/layout/rows/{}/{}", prefix, ri, ki), "合并键组不能为空"));
+                        }
+                        for (gi, g) in group.iter().enumerate() {
+                            if g.as_str().map(|s| !s.is_empty()) != Some(true) {
+                                errors.push(err(&format!("{}/layout/rows/{}/{}", prefix, ri, ki), "合并键组内必须是字符串"));
+                            }
+                            let _ = gi;
+                        }
+                    }
+                    Value::String(s) if !s.is_empty() => {
                         if let Some(defined) = &defined_keys {
-                            if !defined.iter().any(|k| k == s) {
+                            if !defined.iter().any(|k| k == s) && !BUILTIN_FUNCTION_KEYS.contains(&s.as_str()) {
                                 warn(warnings, format!("{}/layout/rows/{}/{}：键 {} 未在 keys 中定义，将使用默认行为", prefix, ri, ki, s));
                             }
                         }
@@ -529,9 +628,18 @@ fn validate_key_binding(prefix: &str, binding: &Value, errors: &mut Vec<Validati
         return;
     };
 
-    for gesture in ["tap", "swipe_up", "swipe_down"] {
-        if let Some(v) = obj.get(gesture) {
+    // Xime 3.0：tap / double_tap / 四向滑动都是手势，long_press 单独是 {display, values}
+    for gesture in GESTURE_FIELDS.iter().filter(|g| **g != "long_press") {
+        if let Some(v) = obj.get(*gesture) {
             validate_gesture(&format!("{}/{}", prefix, gesture), v, errors, warnings);
+        }
+    }
+
+    // 键级可选 width：列宽比例（数字）
+    if let Some(w) = obj.get("width") {
+        match w.as_f64() {
+            Some(n) if n > 0.0 && n <= 10.0 => {}
+            _ => errors.push(err(&format!("{}/width", prefix), "width 必须是 0~10 之间的数字（列宽比例）")),
         }
     }
 
@@ -545,6 +653,13 @@ fn validate_key_binding(prefix: &str, binding: &Value, errors: &mut Vec<Validati
             }
             Value::Object(_) => validate_long_press_values(prefix, lp, errors, warnings),
             _ => errors.push(err(&format!("{}/long_press", prefix), "long_press 必须是数组或对象")),
+        }
+    }
+
+    // 未知手势字段提示（如 2.x 遗留的 when_composing / sticky / repeat）
+    for k in obj.keys() {
+        if !GESTURE_FIELDS.contains(&k.as_str()) && k != "width" {
+            warn(warnings, format!("{}/{} 是未知的按键字段（Xime 3.0 已移除 when_composing/sticky/repeat 等旧字段）", prefix, k));
         }
     }
 }
@@ -569,23 +684,57 @@ fn validate_long_press_values(prefix: &str, lp: &Value, errors: &mut Vec<Validat
 
 fn validate_gesture(path: &str, gesture: &Value, errors: &mut Vec<ValidationError>, warnings: &mut Vec<String>) {
     match gesture {
-        // 简单字符串 = 上屏文本（如 "@"、"~"），不做启发式检查
+        // 简单字符串 = 按槽位默认动作（tap 为 send_rime，swipe/长按为 commit），显示也是它
         Value::String(_) => {}
         Value::Object(map) => {
+            // use 引用 keyboard.actions 预设：其余字段被忽略（由调用方校验预设存在性）
+            if let Some(use_name) = map.get("use").and_then(Value::as_str) {
+                if use_name.is_empty() {
+                    errors.push(err(path, "use 不能为空（引用 keyboard.actions 预设名）"));
+                }
+                return;
+            }
             if let Some(label) = map.get("label") {
-                if !label.is_string() {
-                    errors.push(err(path, "label 必须是字符串"));
+                // label 支持字符串或字符串数组（数组按多行显示，解析为 join("\n")）
+                match label {
+                    Value::String(_) => {}
+                    Value::Array(items) if items.iter().all(|i| i.is_string()) => {}
+                    _ => errors.push(err(path, "label 必须是字符串或字符串数组（多行显示）")),
+                }
+            }
+            if let Some(icon) = map.get("icon") {
+                if !icon.is_string() {
+                    errors.push(err(path, "icon 必须是字符串"));
+                }
+            }
+            // repeat：长按项按住连发标记（如 delete 长按重复删）
+            if let Some(r) = map.get("repeat") {
+                if !r.is_boolean() {
+                    errors.push(err(path, "repeat 必须是布尔值（长按连发标记）"));
                 }
             }
             if let Some(action) = map.get("action") {
                 match action.as_str() {
                     Some(a) if GESTURE_ACTIONS.contains(&a) => {
-                        if a == "command" {
-                            match map.get("value").and_then(Value::as_str) {
+                        match a {
+                            "command" => match map.get("value").and_then(Value::as_str) {
                                 Some(v) if COMMAND_VALUES.contains(&v) => {}
                                 Some(v) => warn(warnings, format!("{}：未知 command 值 {}（内置命令: {}）", path, v, COMMAND_VALUES.join(", "))),
                                 None => errors.push(err(path, "action=command 时必须提供 value 命令名")),
+                            },
+                            "switch_route" => match map.get("value").and_then(Value::as_str) {
+                                Some(v) if SWITCH_ROUTE_VALUES.contains(&v) => {}
+                                Some(v) => warn(warnings, format!("{}：未知 switch_route 值 {}（可选 {}）", path, v, SWITCH_ROUTE_VALUES.join(", "))),
+                                None => warn(warnings, format!("{}：switch_route 未指定 value 面板", path)),
+                            },
+                            "repeat_space" => {
+                                if let Some(v) = map.get("value") {
+                                    if v.as_f64().is_none() && v.as_str().map(|s| s.parse::<i64>().is_ok()) != Some(true) {
+                                        errors.push(err(path, "repeat_space 的 value 必须是数字（次数，默认 5）"));
+                                    }
+                                }
                             }
+                            _ => {}
                         }
                     }
                     // Xime 对未知动作按“仅显示不执行”降级处理，因此这里给警告而非错误
@@ -598,6 +747,12 @@ fn validate_gesture(path: &str, gesture: &Value, errors: &mut Vec<ValidationErro
                     Some(s) if DISPLAY_MODES.contains(&s) => {}
                     Some(s) => errors.push(err(path, format!("未知 display 模式: {}（可选 key/bubble/both）", s))),
                     None => errors.push(err(path, "display 必须是字符串")),
+                }
+            }
+            // bubble：独立控制运行时是否弹气泡（默认 true），与 display 互不影响
+            if let Some(b) = map.get("bubble") {
+                if !b.is_boolean() {
+                    errors.push(err(path, "bubble 必须是布尔值"));
                 }
             }
         }

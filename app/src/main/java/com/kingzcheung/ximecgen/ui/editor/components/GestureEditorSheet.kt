@@ -29,13 +29,22 @@ import androidx.compose.ui.unit.dp
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Xime 支持的手势动作（与 validator 的 GESTURE_ACTIONS 一致）。 */
+/** Xime 3.0 支持的手势动作（与 validator 的 GESTURE_ACTIONS / KeyActionRegistry 一致）。 */
 val GESTURE_ACTIONS = listOf(
-    "commit", "command", "select_all", "copy", "cut", "paste",
+    "commit", "send_rime", "command", "select_all", "copy", "cut", "paste",
     "line_start", "line_end", "undo", "none", "repeat",
     "switch_route", "toggle_ascii", "delete", "toggle_symbols",
+    "enter", "newline", "space", "repeat_space",
+    "clear_all", "undo_clear", "toggle_shift", "voice",
 )
-val COMMAND_VALUES = listOf("clear_composition", "show_ime_picker")
+/** command 动作可用的命令值（Xime 3.0 键盘按键路由命令）。 */
+val COMMAND_VALUES = listOf(
+    "clear_composition", "show_ime_picker",
+    "shift_single", "shift_caps", "toggle_shift",
+    "mode_change", "mode_change_number", "mode_change_common_symbol",
+)
+/** switch_route 可用的面板路由值。 */
+val SWITCH_ROUTE_VALUES = listOf("emoji", "symbol", "clipboard")
 val DISPLAY_MODES = listOf("key", "bubble", "both")
 
 /**
@@ -116,7 +125,18 @@ fun GestureEditor(
                     value = it
                     onChanged(buildObj(label, action, value, display))
                 }
-            } else {
+            } else if (action == "switch_route") {
+                DropdownRow("面板", value.ifEmpty { SWITCH_ROUTE_VALUES.first() }, SWITCH_ROUTE_VALUES) {
+                    value = it
+                    onChanged(buildObj(label, action, value, display))
+                }
+            } else if (action != "select_all" && action != "copy" && action != "cut" && action != "paste" &&
+                action != "line_start" && action != "line_end" && action != "undo" && action != "none" &&
+                action != "repeat" && action != "toggle_ascii" && action != "delete" && action != "toggle_symbols" &&
+                action != "enter" && action != "newline" && action != "space" && action != "clear_all" &&
+                action != "undo_clear" && action != "toggle_shift" && action != "voice"
+            ) {
+                // commit / send_rime / repeat_space 需要值（其余动作无需参数）
                 OutlinedTextField(
                     value = value,
                     onValueChange = {
@@ -182,7 +202,7 @@ fun DropdownRow(
 }
 
 /**
- * 按键手势编辑弹层：tap / swipe_up / swipe_down / long_press。
+ * 按键手势编辑弹层：tap / double_tap / 四向滑动 / long_press（Xime 3.0 全手势）。
  * [onSave] 收到完整 binding 对象（调用方负责生成 set op）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -194,8 +214,11 @@ fun GestureEditorSheet(
     onSave: (JSONObject) -> Unit,
 ) {
     var tap by remember { mutableStateOf(binding?.opt("tap")) }
+    var doubleTap by remember { mutableStateOf(binding?.opt("double_tap")) }
     var swipeUp by remember { mutableStateOf(binding?.opt("swipe_up")) }
     var swipeDown by remember { mutableStateOf(binding?.opt("swipe_down")) }
+    var swipeLeft by remember { mutableStateOf(binding?.opt("swipe_left")) }
+    var swipeRight by remember { mutableStateOf(binding?.opt("swipe_right")) }
     var longPressValues by remember {
         mutableStateOf(
             binding?.optJSONObject("long_press")?.optJSONArray("values") ?: JSONArray()
@@ -217,12 +240,24 @@ fun GestureEditorSheet(
             GestureEditor("tap", tap, onChanged = { tap = it })
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            Text("double_tap（双击）", style = MaterialTheme.typography.labelLarge)
+            GestureEditor("double_tap", doubleTap, onChanged = { doubleTap = it })
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
             Text("swipe_up（上滑）", style = MaterialTheme.typography.labelLarge)
             GestureEditor("swipe_up", swipeUp, onChanged = { swipeUp = it })
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             Text("swipe_down（下滑）", style = MaterialTheme.typography.labelLarge)
             GestureEditor("swipe_down", swipeDown, onChanged = { swipeDown = it })
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            Text("swipe_left（左滑，接管光标移动）", style = MaterialTheme.typography.labelLarge)
+            GestureEditor("swipe_left", swipeLeft, onChanged = { swipeLeft = it })
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            Text("swipe_right（右滑，接管光标移动）", style = MaterialTheme.typography.labelLarge)
+            GestureEditor("swipe_right", swipeRight, onChanged = { swipeRight = it })
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             Text("long_press（长按气泡，最多 10 项）", style = MaterialTheme.typography.labelLarge)
@@ -276,8 +311,11 @@ fun GestureEditorSheet(
                 Button(onClick = {
                     val bindingOut = JSONObject()
                     tap?.let { bindingOut.put("tap", it) }
+                    doubleTap?.let { bindingOut.put("double_tap", it) }
                     swipeUp?.let { bindingOut.put("swipe_up", it) }
                     swipeDown?.let { bindingOut.put("swipe_down", it) }
+                    swipeLeft?.let { bindingOut.put("swipe_left", it) }
+                    swipeRight?.let { bindingOut.put("swipe_right", it) }
                     if (longPressValues.length() > 0) {
                         bindingOut.put(
                             "long_press",

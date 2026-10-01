@@ -22,12 +22,28 @@ android {
         }
     }
 
+    signingConfigs {
+        // CI/本地发布签名：通过环境变量注入（KEYSTORE_FILE/PASSWORD、KEY_ALIAS/KEY_PASSWORD）。
+        // 缺省时 release 不签名，产物仍可手动 sign。
+        create("release") {
+            System.getenv("KEYSTORE_FILE")?.let { ks ->
+                storeFile = file(ks)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             // 开启 R8 混淆 + 资源收缩：material-icons-extended 全量 dex 约 40MB，
             // 不开启时 APK 会膨胀到 45MB+，开启后只保留实际用到的图标
             isMinifyEnabled = true
             isShrinkResources = true
+            if (System.getenv("KEYSTORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

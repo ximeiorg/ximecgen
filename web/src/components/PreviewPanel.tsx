@@ -15,7 +15,11 @@ function gestureLabel(v: unknown): string | null {
   if (typeof v === 'string') return v
   if (v && typeof v === 'object') {
     const o = v as any
-    return String(o.label ?? o.value ?? '') || null
+    // label 支持数组（多行显示，join("\n")），键帽提示取首个非空行
+    const raw = Array.isArray(o.label) ? o.label.join('\n') : o.label ?? o.value
+    const s = String(raw ?? '')
+    const first = s.split('\n').find(l => l.trim() !== '')
+    return first ?? null
   }
   return null
 }

@@ -3,12 +3,14 @@ import { CATALOG, type TemplateEntry } from '../data/templates'
 interface Props {
   open: boolean
   loadingId: string | null
+  /** 拉取/解析失败信息（显示在弹窗内，因为 Raw 页错误条在 Form 页不可见） */
+  error: string | null
   onClose: () => void
   onPick: (id: string) => void
 }
 
 /** 模板选择弹窗：与 Android 首页模板目录一致（jsDelivr 拉取，无兜底）。 */
-export function TemplatePicker({ open, loadingId, onClose, onPick }: Props) {
+export function TemplatePicker({ open, loadingId, error, onClose, onPick }: Props) {
   if (!open) return null
   return (
     <div
@@ -48,6 +50,9 @@ export function TemplatePicker({ open, loadingId, onClose, onPick }: Props) {
             {loadingId === t.id && <span style={{ color: '#89b4fa', fontSize: 12 }}>拉取中…</span>}
           </button>
         ))}
+        {error && (
+          <div style={{ fontSize: 12, color: '#f38ba8', marginBottom: 8 }}>✗ {error}</div>
+        )}
         <div style={{ fontSize: 11, color: '#6c7086' }}>
           模板来自 xime 官方仓库（jsDelivr CDN），拉取失败请检查网络。
         </div>

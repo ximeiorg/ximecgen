@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "wasm": "wasm-pack build ../crates/xime-config-core --target web --out-dir src/pkg --out-name xime_config_core"
+    "wasm": "wasm-pack build ../crates/xime-config-core --target web --out-dir ../../web/src/pkg --out-name xime_config_core"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

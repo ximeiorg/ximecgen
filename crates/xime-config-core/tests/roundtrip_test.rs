@@ -137,6 +137,57 @@ fn validate_default_yaml_has_no_errors() {
 }
 
 #[test]
+fn validate_xime30_features() {
+    // 3.0 新手势类型（左右滑/双击/repeat_space/switch_route/bubble）与新布局 section 校验
+    let config: Value = serde_json::json!({
+        "metadata": {"app_name": "Xime", "app_version": ">=3.0.0"},
+        "keyboard": {
+            "qwerty": {
+                "layout": {"rows": [
+                    ["q", "w"],
+                    [ ["a", "s"], "d" ],
+                    [ "shift", "z", "delete" ],
+                    ["mode_change", "space", "enter"]
+                ]},
+                "keys": {
+                    "q": { "tap": {"label": "q", "action": "send_rime"}, "swipe_left": {"label": "删词", "action": "command", "value": "clear_composition"}, "long_press": {"display": "bubble", "values": ["q", "Q"]} },
+                    "w": { "swipe_up": {"value": "2", "display": "key", "bubble": false} },
+                    "d": { "double_tap": {"action": "toggle_shift"}, "swipe_right": {"label": "粘贴", "action": "paste"} },
+                    "space": { "long_press": {"values": [{"action": "repeat_space", "value": 3}]} },
+                    "shift": { "width": 1.4, "tap": {"action": "command", "value": "shift_single"} },
+                    "z": { "tap": "z" },
+                    "mode_change": { "tap": {"action": "command", "value": "mode_change"} },
+                    "2": { "tap": {"label": "ABC"} },
+                    "3": { "tap": {"label": "DEF"} }
+                }
+            },
+            "t9": {
+                "schemas": ["t9_pinyin"],
+                "layout": {"left": ["candidates"], "rows": [["1", "2", "3"]], "right": ["delete", "clear", "enter"]},
+                "keys": {"1": {"swipe_up": {"value": "1", "display": "key", "bubble": false}}}
+            },
+            "qwerty_14": {"schemas": ["pinyin_14jian"]}
+        }
+    });
+    let result = validator::validate(&config);
+    assert!(result.valid, "3.0 特性不应报错: {:?}", result.errors);
+    let real: Vec<_> = result.warnings.iter().filter(|w| !w.contains("color_schemes")).collect();
+    assert!(real.is_empty(), "3.0 内置键/命令不应告警: {:?}", real);
+
+    // 旧版遗留字段（when_composing）与非法 width 应有告警/错误
+    let legacy: Value = serde_json::json!({
+        "metadata": {"app_name": "Xime"},
+        "keyboard": {"qwerty": {"keys": {
+            "q": {"tap": "q", "when_composing": true},
+            "w": {"tap": "w", "width": 0}
+        }}}
+    });
+    let r2 = validator::validate(&legacy);
+    assert!(r2.warnings.iter().any(|w| w.contains("when_composing")));
+    assert!(!r2.valid, "width=0 应报错");
+}
+
+#[test]
 fn validate_catches_schema_violations() {
     let config: Value = serde_json::json!({
         "metadata": {"app_name": "", "app_version": "abc", "config_version": 1},
@@ -220,6 +271,41 @@ fn all_vendored_samples_roundtrip() {
         let result = validator::validate(&reparsed);
         assert!(result.valid, "{}: 校验失败: {:?}", name, result.errors);
     }
+}
+
+#[test]
+fn validate_xime30_presets_and_label_array() {
+    // label 数组（多行显示）与 keyboard.actions 预设 / use 引用是 3.0 合法写法
+    let config: Value = serde_json::json!({
+        "metadata": {"app_name": "Xime"},
+        "keyboard": {
+            "actions": {"my_copy": {"label": ["复制", "到剪贴板"], "action": "copy"}},
+            "qwerty": {"keys": {
+                "q": {"tap": {"use": "my_copy"}},
+                "delete": {"long_press": {"values": [{"action": "delete", "repeat": true}]}}
+            }}
+        }
+    });
+    let r = validator::validate(&config);
+    let real: Vec<_> = r.warnings.iter().filter(|w| !w.contains("color_schemes")).collect();
+    assert!(r.valid, "label 数组/use/repeat 不应报错: {:?}", r.errors);
+    assert!(real.is_empty(), "合法写法不应告警: {:?}", real);
+
+    // use 引用未知预设 → 警告（Xime 运行时该手势不生效）
+    let bad: Value = serde_json::json!({
+        "metadata": {"app_name": "Xime"},
+        "keyboard": {"qwerty": {"keys": {"q": {"tap": {"use": "ghost"}}}}}
+    });
+    let rb = validator::validate(&bad);
+    assert!(rb.warnings.iter().any(|w| w.contains("未知动作预设") && w.contains("ghost")));
+
+    // repeat 非布尔 → 错误
+    let bad2: Value = serde_json::json!({
+        "metadata": {"app_name": "Xime"},
+        "keyboard": {"qwerty": {"keys": {"q": {"tap": {"repeat": "yes"}}}}}
+    });
+    let r2 = validator::validate(&bad2);
+    assert!(!r2.valid, "repeat 非布尔应报错");
 }
 
 #[test]

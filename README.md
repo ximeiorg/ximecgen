@@ -60,3 +60,31 @@ npm run dev      # 或 npm run build
 # preBuild 钩子自动执行 scripts/build-native.sh（三个 ABI 的 libxime_config_core.so 输出到 app/src/main/jniLibs）
 # 工具链缺失时脚本跳过构建并警告；已有 .so 产物可直接复用
 ```
+
+### Release APK（CI 构建）
+
+推送 `v*` 标签（如 `v1.0.1`）或手动触发 workflow（Actions → Release APK → Run workflow），
+GitHub Actions 自动完成：Rust 交叉编译 → Gradle release 构建（R8 混淆、arm64-v8a）→
+上传 artifact 并附带到 GitHub Release。产物命名 `ximecgen-<版本>-arm64-v8a.apk`。
+
+**签名（可选但推荐）**：在仓库 Settings → Secrets and variables → Actions 配置四个 secret：
+
+| Secret | 说明 |
+|---|---|
+| `KEYSTORE_FILE` | keystore 文件的 base64（`base64 -w0 release.keystore`） |
+| `KEYSTORE_PASSWORD` | keystore 密码 |
+| `KEY_ALIAS` | 别名 |
+| `KEY_PASSWORD` | key 密码 |
+
+配置后 CI 产物为已签名 APK，可直接安装；未配置时产出未签名 APK，需手动签名：
+
+```bash
+# 本地生成发布 keystore
+keytool -genkeypair -v -keystore release.keystore -storetype PKCS12 \
+  -alias ximecgen -keyalg RSA -keysize 2048 -validity 10000
+
+# 本地手动签名未签名产物
+apksigner sign --ks release.keystore --out signed.apk ximecgen-1.0.0-arm64-v8a.apk
+```
+
+本地构建签名包：`KEYSTORE_FILE=... KEYSTORE_PASSWORD=... KEY_ALIAS=... KEY_PASSWORD=... ./gradlew assembleRelease`

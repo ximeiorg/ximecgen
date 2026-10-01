@@ -33,6 +33,7 @@ export default function App() {
   const [previewScheme, setPreviewScheme] = useState('')
   const [showTemplates, setShowTemplates] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
+  const [templateError, setTemplateError] = useState<string | null>(null)
   const [showValidation, setShowValidation] = useState(false)
   const validateTimer = useRef<number | undefined>(undefined)
 
@@ -105,10 +106,11 @@ export default function App() {
   const handleTemplate = useCallback(async (id: string) => {
     if (loadingTemplate) return
     setLoadingTemplate(id)
+    setTemplateError(null)
     const yaml = await fetchExample(id)
     setLoadingTemplate(null)
     if (!yaml) {
-      setParseError('模板拉取失败，请检查网络')
+      setTemplateError('拉取失败或内容不完整（需包含 color_schemes），请检查网络后重试')
       return
     }
     const parsed = wasmReady() ? parseYaml(yaml) : null
@@ -120,6 +122,7 @@ export default function App() {
       setShowTemplates(false)
     } else {
       setParseError(wasmError() ?? '模板解析失败')
+      setTemplateError('模板解析失败：' + (wasmError() ?? '未知错误'))
     }
   }, [loadingTemplate])
 
@@ -232,6 +235,7 @@ export default function App() {
       <TemplatePicker
         open={showTemplates}
         loadingId={loadingTemplate}
+        error={templateError}
         onClose={() => setShowTemplates(false)}
         onPick={handleTemplate}
       />
