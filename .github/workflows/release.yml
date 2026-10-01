@@ -75,8 +75,9 @@ jobs:
         run: |
           # 把错误要点作为 check-run annotation（匿名 API 可读）
           if [ -f build.log ]; then
-            grep -aE "^e: |error:|Error:|FAILURE|What went wrong|Caused by|> Task.*FAILED" build.log | head -15 | while IFS= read -r line; do
-              echo "::error::${line:0:200}"
+            # "What went wrong" 段落 + 编译错误行都带上（A=匹配行，B=其后 6 行上下文）
+            grep -a -A6 -E "^e: |Caused by:|> Task.*FAILED|What went wrong" build.log | head -60 | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::${line:0:200}"
             done
           fi
 
