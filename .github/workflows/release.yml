@@ -43,8 +43,17 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest 预装 Android SDK（ANDROID_HOME 已指向 /usr/local/lib/android/sdk），
+      # 无需 setup-android action（该 action 在部分 runner 上会因 license/网络问题失败）；
+      # 如系统镜像缺失会由 Gradle/SDK 自动补装（licenses 已被 GitHub 预接受）。
+      - name: Show Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME"
+          ls "$ANDROID_HOME/ndk" 2>/dev/null || true
+
+      - name: Accept SDK licenses (idempotent)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Build release APK (Rust native + Gradle)
         env:
