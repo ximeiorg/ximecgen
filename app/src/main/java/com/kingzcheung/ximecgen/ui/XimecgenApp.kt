@@ -50,6 +50,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.kingzcheung.ximecgen.data.TemplateEntry
 import com.kingzcheung.ximecgen.data.TemplateFetcher
 import com.kingzcheung.ximecgen.ui.editor.EditorScreen
 import com.kingzcheung.ximecgen.vm.ConfigViewModel
@@ -89,8 +90,8 @@ fun XimecgenApp() {    val nav = rememberNavController()
                     vm.openUri(context, android.net.Uri.parse(uri))
                     nav.navigate("editor")
                 },
-                onExample = { id ->
-                    vm.newFromExample(context, id) { nav.navigate("editor") }
+                onExample = { entry ->
+                    vm.newFromExample(context, entry) { nav.navigate("editor") }
                 },
                 onOpenInternal = { name ->
                     vm.openInternal(context, name)
@@ -145,13 +146,14 @@ fun HomeScreen(
     onNew: () -> Unit,
     onOpen: () -> Unit,
     onOpenRecent: (String) -> Unit,
-    onExample: (String) -> Unit,
+    onExample: (TemplateEntry) -> Unit,
     onOpenInternal: (String) -> Unit,
 ) {
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         vm.refreshRecents(context)
         vm.refreshInternal(context)
+        vm.refreshTemplates()
     }
 
     Scaffold(
@@ -234,20 +236,34 @@ fun HomeScreen(
                     )
                 }
             }
-            items(TemplateFetcher.CATALOG.size) { i ->
-                val entry = TemplateFetcher.CATALOG[i]
-                val loading = state.loadingTemplate == entry.id
-                ListItem(
-                    headlineContent = { Text(entry.title) },
-                    supportingContent = { Text(entry.description) },
-                    leadingContent = { Icon(Icons.Default.Description, null) },
-                    trailingContent = {
-                        if (loading) CircularProgressIndicator(Modifier.size(18.dp))
-                    },
-                    modifier = Modifier.clickable(enabled = state.loadingTemplate == null) {
-                        onExample(entry.id)
-                    },
-                )
+            when {
+                state.templates == null -> item {
+                    ListItem(
+                        headlineContent = { Text("模板目录加载中…") },
+                        leadingContent = { CircularProgressIndicator(Modifier.size(18.dp)) },
+                    )
+                }
+                state.templates.isEmpty() -> item {
+                    ListItem(
+                        headlineContent = { Text("模板目录拉取失败") },
+                        supportingContent = { Text("请检查网络后下拉重试") },
+                    )
+                }
+                else -> items(state.templates.size) { i ->
+                    val entry = state.templates[i]
+                    val loading = state.loadingTemplate == entry.id
+                    ListItem(
+                        headlineContent = { Text(entry.title) },
+                        supportingContent = { Text(entry.description) },
+                        leadingContent = { Icon(Icons.Default.Description, null) },
+                        trailingContent = {
+                            if (loading) CircularProgressIndicator(Modifier.size(18.dp))
+                        },
+                        modifier = Modifier.clickable(enabled = state.loadingTemplate == null) {
+                            onExample(entry)
+                        },
+                    )
+                }
             }
             if (state.internalConfigs.isNotEmpty()) {
                 item {

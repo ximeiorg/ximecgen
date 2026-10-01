@@ -104,11 +104,12 @@ object DocumentIo {
     }
 }
 
-/** 常用配置模板条目（目录名对应 Xime 仓库 docs/config_examples/<id>/xime.custom.yaml）。 */
+/** 常用配置模板条目（来自 Xime 官方布局子索引 index.ximei.me/layouts/index.yaml）。 */
 data class TemplateEntry(
     val id: String,
     val title: String,
     val description: String,
+    val downloadUrl: String,
 )
 
 object TemplateFetcher {
@@ -118,20 +119,55 @@ object TemplateFetcher {
     private const val GITHUB_REDIRECT_URL =
         "https://github.com/ximeiorg/Xime/raw/main/app/src/main/assets/xime.yaml"
 
-    /** 常用模板目录源（jsDelivr CDN，对应仓库 docs/config_examples/<id>/xime.custom.yaml）。 */
-    private const val CDN_BASE =
-        "https://cdn.jsdelivr.net/gh/ximeiorg/xime@master/docs/config_examples/"
+    /** Xime 官方布局子索引（xime-index 仓库 scripts/ci-update.py 自动生成）。 */
+    const val LAYOUTS_INDEX_URL = "https://index.ximei.me/layouts/index.yaml"
 
-    /** 内置目录（随 APK 发布，离线可用），与仓库 docs/config_examples 一一对应。 */
-    val CATALOG = listOf(
-        TemplateEntry("full", "全键盘完整示例", "标准布局，手势/颜色/阴影全量配置"),
-        TemplateEntry("wubi_compact", "五笔·紧凑布局", "五笔字根气泡提示，紧凑键面"),
-        TemplateEntry("flypy", "小鹤双拼", "紧凑布局双拼键位"),
-        TemplateEntry("msdouble", "微软双拼", "标准布局双拼键位"),
-        TemplateEntry("cangjie", "仓颉", "仓颉字根键位"),
-        TemplateEntry("theme", "主题配色示例", "多套配色与纯色/渐变/图片背景演示"),
-        TemplateEntry("shortcut", "快捷符号手势", "键面直显快捷符号的手势写法"),
-    )
+    /**
+     * 拉取布局子索引并解析为模板目录。失败返回 null（调用方提示网络问题）。
+     * 索引字段：id/name/description/currentVersion/versions[].downloadUrl[].url。
+     */
+    suspend fun fetchLayoutIndex(): List<TemplateEntry>? =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val raw = fetchRaw(LAYOUTS_INDEX_URL) ?: return@runCatching null
+                parseLayoutsIndex(raw)
+            }.getOrNull()
+        }
+
+    /** 极简解析（避免引入 YAML 依赖）：按 "- id:" 切块，抓取所需标量字段。 */
+    internal fun parseLayoutsIndex(raw: String): List<TemplateEntry> {
+        val entries = mutableListOf<TemplateEntry>()
+        // 布局条目以 "- id: " 开头；downloadUrl 在该条目块内的第一个 "- url: "
+        val blocks = raw.split(Regex("(?m(?=^\\s*- id: ))"))
+        // split 用的 lookahead 写法兼容性差，改用逐行状态机：
+        entries.clear()
+        var curId: String? = null
+        var curName = ""
+        var curDesc = ""
+        var curUrl: String? = null
+        val lines = raw.lines()
+        fun flush() {
+            val id = curId
+            if (id != null && curUrl != null) {
+                entries.add(TemplateEntry(id, curName.ifEmpty { id }, curDesc.ifEmpty { "键盘布局模板" }, curUrl!!))
+            }
+            curId = null; curName = ""; curDesc = ""; curUrl = null
+        }
+        for (line in lines) {
+            val t = line.trim()
+            when {
+                t.startsWith("- id:") -> { flush(); curId = t.removePrefix("- id:").trim().trim('"', '\'') }
+                t.startsWith("name:") && curId != null && curName.isEmpty() ->
+                    curName = t.removePrefix("name:").trim().trim('"', '\'')
+                t.startsWith("description:") && curId != null ->
+                    curDesc = t.removePrefix("description:").trim().trim('"', '\'')
+                t.startsWith("- url:") && curId != null && curUrl == null ->
+                    curUrl = t.removePrefix("- url:").trim().trim('"', '\'')
+            }
+        }
+        flush()
+        return entries
+    }
 
     /** 内置默认模板（新建配置用）。 */
     fun loadBundled(context: Context): String =
@@ -144,10 +180,10 @@ object TemplateFetcher {
         }.getOrNull()
     }
 
-    /** 拉取常用模板（jsDelivr CDN）；失败返回 null。 */
-    suspend fun fetchExample(id: String): String? =
+    /** 按 index.yaml 给出的 URL 直接拉取模板内容；无效内容返回 null。 */
+    suspend fun fetchTemplate(entry: TemplateEntry): String? =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            fetch("$CDN_BASE$id/xime.custom.yaml")
+            fetch(entry.downloadUrl)
         }
 
     private fun fetch(url: String): String? = runCatching {
@@ -159,7 +195,20 @@ object TemplateFetcher {
         try {
             if (conn.responseCode !in 200..299) return@runCatching null
             conn.inputStream.bufferedReader().use { it.readText() }
-                .takeIf { it.contains("color_schemes") }  // 简单有效性检查（防止代理劫持页）
+                .takeIf { it.contains("color_schemes") || it.contains("keyboard") }  // 简单有效性检查（防代理劫持页）
+        } finally {
+            conn.disconnect()
+        }
+    }.getOrNull()
+
+    private fun fetchRaw(url: String): String? = runCatching {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 8000
+        conn.readTimeout = 8000
+        conn.setRequestProperty("User-Agent", "ximecgen")
+        try {
+            if (conn.responseCode !in 200..299) return@runCatching null
+            conn.inputStream.bufferedReader().use { it.readText() }
         } finally {
             conn.disconnect()
         }

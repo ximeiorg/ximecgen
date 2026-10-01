@@ -5,7 +5,7 @@ import { PreviewPanel } from './components/PreviewPanel'
 import { TemplatePicker } from './components/TemplatePicker'
 import { SchemeRadioGroup } from './components/SchemeSwatches'
 import { ValidationPanel } from './components/ValidationPanel'
-import { fetchExample } from './data/templates'
+import { fetchLayoutIndex, fetchTemplate, type TemplateEntry } from './data/templates'
 import {
   loadWasm, wasmReady, error as wasmError,
   parseYaml, toYaml, validateConfig, getDescriptors, applyOps,
@@ -34,6 +34,7 @@ export default function App() {
   const [showTemplates, setShowTemplates] = useState(false)
   const [loadingTemplate, setLoadingTemplate] = useState<string | null>(null)
   const [templateError, setTemplateError] = useState<string | null>(null)
+  const [templates, setTemplates] = useState<TemplateEntry[] | null>(null)
   const [showValidation, setShowValidation] = useState(false)
   const validateTimer = useRef<number | undefined>(undefined)
 
@@ -44,8 +45,10 @@ export default function App() {
       setReady(true)
       if (!ok) return
       setDescriptors(getDescriptors<any[]>() ?? [])
-      // 默认加载官方「全键盘完整示例」（jsDelivr，与模板目录同源；失败时用最小兜底）
-      const yaml = (await fetchExample('full')) ?? FALLBACK_YAML
+      // 默认加载布局子索引的第一个模板；失败时用最小兜底
+      const idx = await fetchLayoutIndex()
+      setTemplates(idx ?? [])
+      const yaml = (idx && idx.length ? await fetchTemplate(idx[0]) : null) ?? FALLBACK_YAML
       const parsed = parseYaml(yaml)
       if (parsed) {
         setConfig(parsed)
@@ -103,14 +106,14 @@ export default function App() {
   }, [config])
 
   /** 应用模板：拉取 jsDelivr 上的官方示例（无兜底，失败提示）。 */
-  const handleTemplate = useCallback(async (id: string) => {
+  const handleTemplate = useCallback(async (entry: TemplateEntry) => {
     if (loadingTemplate) return
-    setLoadingTemplate(id)
+    setLoadingTemplate(entry.id)
     setTemplateError(null)
-    const yaml = await fetchExample(id)
+    const yaml = await fetchTemplate(entry)
     setLoadingTemplate(null)
     if (!yaml) {
-      setTemplateError('拉取失败或内容不完整（需包含 color_schemes），请检查网络后重试')
+      setTemplateError('拉取失败或内容不完整，请检查网络后重试')
       return
     }
     const parsed = wasmReady() ? parseYaml(yaml) : null
@@ -234,6 +237,7 @@ export default function App() {
 
       <TemplatePicker
         open={showTemplates}
+        templates={templates}
         loadingId={loadingTemplate}
         error={templateError}
         onClose={() => setShowTemplates(false)}

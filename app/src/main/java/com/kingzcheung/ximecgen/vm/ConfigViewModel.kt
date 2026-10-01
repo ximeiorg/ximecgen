@@ -13,6 +13,7 @@ import com.kingzcheung.ximecgen.data.InternalFile
 import com.kingzcheung.ximecgen.data.InternalStore
 import com.kingzcheung.ximecgen.data.RecentFile
 import com.kingzcheung.ximecgen.data.RecentFilesStore
+import com.kingzcheung.ximecgen.data.TemplateEntry
 import com.kingzcheung.ximecgen.data.TemplateFetcher
 import java.io.File
 import kotlinx.coroutines.Job
@@ -60,6 +61,8 @@ data class ConfigUiState(
     val recentFiles: List<RecentFile> = emptyList(),
     val internalConfigs: List<InternalFile> = emptyList(),
     val loadingTemplate: String? = null,
+    /** 模板目录（来自 index.ximei.me 布局子索引；null=尚未拉取，空列表=拉取失败）。 */
+    val templates: List<TemplateEntry>? = null,
     val yamlOut: String = "",
 ) {
     val hasFile: Boolean get() = configJson.isNotEmpty()
@@ -87,13 +90,13 @@ class ConfigViewModel : ViewModel() {
         refreshRecents(context)
     }
 
-    /** 从常用模板目录新建（jsDelivr CDN）；成功后 onReady 再进编辑器，失败弹提示。 */
-    fun newFromExample(context: Context, id: String, onReady: () -> Unit = {}) {
+    /** 从模板目录新建（模板内容按 index.ximei.me 子索引给出的 URL 拉取）；成功后 onReady 再进编辑器。 */
+    fun newFromExample(context: Context, entry: TemplateEntry, onReady: () -> Unit = {}) {
         if (_state.value.loadingTemplate != null) return
-        _state.update { it.copy(loadingTemplate = id) }
+        _state.update { it.copy(loadingTemplate = entry.id) }
         viewModelScope.launch {
             val yaml = try {
-                TemplateFetcher.fetchExample(id)
+                TemplateFetcher.fetchTemplate(entry)
             } finally {
                 _state.update { it.copy(loadingTemplate = null) }
             }
@@ -101,7 +104,7 @@ class ConfigViewModel : ViewModel() {
                 android.widget.Toast.makeText(context, "模板拉取失败，请检查网络", android.widget.Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            loadYaml(yaml, fileName = null, uri = null, isTemplate = true, source = "网络模板（jsDelivr）", internalName = null)
+            loadYaml(yaml, fileName = null, uri = null, isTemplate = true, source = "网络模板（${entry.title}）", internalName = null)
             scheduleValidation()
             onReady()
         }
@@ -185,6 +188,15 @@ class ConfigViewModel : ViewModel() {
 
     fun refreshInternal(context: Context) {
         _state.update { it.copy(internalConfigs = InternalStore.list(context)) }
+    }
+
+    /** 拉取布局子索引更新模板目录（已拉取过则跳过；失败置空列表以显示错误提示）。 */
+    fun refreshTemplates(force: Boolean = false) {
+        if (!force && _state.value.templates != null) return
+        viewModelScope.launch {
+            val list = TemplateFetcher.fetchLayoutIndex()
+            _state.update { it.copy(templates = list.orEmpty()) }
+        }
     }
 
     /** 导出到外部文件（SAF URI）：从外部打开的配置写回原文件，否则由导出对话框提供新 URI。 */
