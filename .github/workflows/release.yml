@@ -74,9 +74,9 @@ jobs:
         if: failure()
         run: |
           # 把错误要点作为 check-run annotation（匿名 API 可读）
-          if [ -f gradle-error.txt ]; then
-            grep -E "^e:|error:|FAILURE|What went wrong|Caused by" gradle-error.txt | head -10 | while IFS= read -r line; do
-              echo "::error::${line:0:180}"
+          if [ -f build.log ]; then
+            grep -aE "^e: |error:|Error:|FAILURE|What went wrong|Caused by|> Task.*FAILED" build.log | head -15 | while IFS= read -r line; do
+              echo "::error::${line:0:200}"
             done
           fi
 
