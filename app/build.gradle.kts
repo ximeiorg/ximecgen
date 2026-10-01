@@ -24,15 +24,9 @@ android {
 
     signingConfigs {
         // CI/本地发布签名：通过环境变量注入（KEYSTORE_FILE/PASSWORD、KEY_ALIAS/KEY_PASSWORD）。
-        // 缺省时 release 不签名，产物仍可手动 sign。
-        create("release") {
-            System.getenv("KEYSTORE_FILE")?.let { ks ->
-                storeFile = file(ks)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
-            }
-        }
+        // 四个变量齐全才创建并启用；缺省时 release 不签名，产物可手动 sign。
+        // 注意：不能把 null/"" 赋给 storePassword 等（AGP 会报 Cannot convert '' to File），
+        // 所以整个配置延迟到 buildTypes 里按条件启用。
     }
 
     buildTypes {
@@ -41,8 +35,17 @@ android {
             // 不开启时 APK 会膨胀到 45MB+，开启后只保留实际用到的图标
             isMinifyEnabled = true
             isShrinkResources = true
-            if (System.getenv("KEYSTORE_FILE") != null) {
-                signingConfig = signingConfigs.getByName("release")
+            val ksFile = System.getenv("KEYSTORE_FILE")
+            val ksPass = System.getenv("KEYSTORE_PASSWORD")
+            val keyAlias = System.getenv("KEY_ALIAS")
+            val keyPass = System.getenv("KEY_PASSWORD")
+            if (!ksFile.isNullOrEmpty() && !ksPass.isNullOrEmpty() && !keyAlias.isNullOrEmpty() && !keyPass.isNullOrEmpty()) {
+                signingConfig = signingConfigs.maybeCreate("release").apply {
+                    storeFile = file(ksFile)
+                    storePassword = ksPass
+                    this.keyAlias = keyAlias
+                    keyPassword = keyPass
+                }
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
