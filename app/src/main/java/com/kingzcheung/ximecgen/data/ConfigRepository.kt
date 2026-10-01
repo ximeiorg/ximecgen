@@ -131,16 +131,14 @@ object TemplateFetcher {
             runCatching {
                 val raw = fetchRaw(LAYOUTS_INDEX_URL) ?: return@runCatching null
                 parseLayoutsIndex(raw)
+            }.onFailure {
+                android.util.Log.w("TemplateFetcher", "layouts index error", it)
             }.getOrNull()
         }
 
-    /** 极简解析（避免引入 YAML 依赖）：按 "- id:" 切块，抓取所需标量字段。 */
+    /** 极简解析（避免引入 YAML 依赖）：逐行状态机，抓取布局条目的 id/name/description/首个 downloadUrl。 */
     internal fun parseLayoutsIndex(raw: String): List<TemplateEntry> {
         val entries = mutableListOf<TemplateEntry>()
-        // 布局条目以 "- id: " 开头；downloadUrl 在该条目块内的第一个 "- url: "
-        val blocks = raw.split(Regex("(?m(?=^\\s*- id: ))"))
-        // split 用的 lookahead 写法兼容性差，改用逐行状态机：
-        entries.clear()
         var curId: String? = null
         var curName = ""
         var curDesc = ""
