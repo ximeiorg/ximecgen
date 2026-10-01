@@ -318,3 +318,14 @@ fn field_descriptors_cover_sections() {
     // 配色方案字段使用 {id} 占位
     assert!(descriptors.iter().any(|d| d.path == "/color_schemes/{id}/primary_color"));
 }
+
+#[test]
+fn bundled_default_yaml_valid() {
+    // Android"新建配置"内置模板随仓库更新，必须始终通过解析与校验
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/src/main/assets/default_xime.yaml");
+    let yaml = std::fs::read_to_string(path).unwrap();
+    let v = parser::yaml_to_value(&yaml).unwrap();
+    let r = validator::validate(&v);
+    assert!(r.valid, "内置默认模板不应有错误: {:?}", r.errors);
+    assert!(r.warnings.is_empty(), "内置默认模板不应有警告: {:?}", r.warnings);
+}
