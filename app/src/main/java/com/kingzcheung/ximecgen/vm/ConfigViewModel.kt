@@ -392,15 +392,19 @@ class ConfigViewModel : ViewModel() {
     }
 
     companion object {
-        /** "0xRRGGBB"/"#RRGGBB"/十进制 → Long；无法解析返回 null（保持字符串让校验报错）。 */
+        /** "0xRRGGBB"/"#RRGGBB"/十进制 → Long；无法解析返回 null（保持字符串让校验报错）。
+         *  裸全数字按十进制（UI 十六进制输入恒带 0x/# 前缀），含字母则按十六进制。 */
         fun parseColor(text: String): Long? {
-            val t = text.trim().removePrefix("#")
+            val t = text.trim()
             val hex = when {
                 t.startsWith("0x", ignoreCase = true) -> t.substring(2)
+                t.startsWith("#") -> t.substring(1)
+                t.all { it.isDigit() } ->
+                    return t.toLongOrNull()?.takeIf { it in 1..0xFFFF_FFFF }
                 else -> t
             }
             return hex.toLongOrNull(16)?.takeIf { it in 1..0xFFFF_FFFF }
-                ?: text.trim().toLongOrNull()?.takeIf { it in 1..0xFFFF_FFFF }
+                ?: t.toLongOrNull()?.takeIf { it in 1..0xFFFF_FFFF }
         }
     }
 }

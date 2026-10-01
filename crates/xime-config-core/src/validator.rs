@@ -572,11 +572,9 @@ fn validate_layout(prefix: &str, layout: &Value, errors: &mut Vec<ValidationErro
         }
     }
 
-    let mut defined_keys: Option<Vec<String>> = None;
     if let Some(keys) = obj.get("keys") {
         match keys.as_object() {
             Some(map) => {
-                defined_keys = Some(map.keys().cloned().collect());
                 for (key_id, binding) in map {
                     validate_key_binding(&format!("{}/keys/{}", prefix, key_id), binding, errors, warnings);
                 }
@@ -609,11 +607,8 @@ fn validate_layout(prefix: &str, layout: &Value, errors: &mut Vec<ValidationErro
                         }
                     }
                     Value::String(s) if !s.is_empty() => {
-                        if let Some(defined) = &defined_keys {
-                            if !defined.iter().any(|k| k == s) && !BUILTIN_FUNCTION_KEYS.contains(&s.as_str()) {
-                                warn(warnings, format!("{}/layout/rows/{}/{}：键 {} 未在 keys 中定义，将使用默认行为", prefix, ri, ki, s));
-                            }
-                        }
+                        // rows 引用未在 keys 中定义的键是正常用法（Xime 走内置默认行为），不告警
+                        let _ = s;
                     }
                     _ => errors.push(err(&format!("{}/layout/rows/{}/{}", prefix, ri, ki), "键位必须是字符串")),
                 }

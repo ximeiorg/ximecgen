@@ -48,9 +48,10 @@ object ConfigBridge {
     /**
      * 批量应用修改操作，返回新的配置 JSON。
      * ops 形如 [{"op":"set","path":"/a/b","value":1}, ...]（JSON Pointer 寻址）。
+     * 空配置视为 {}——新建空白配置后的第一批 ops 也能直接生效。
      */
     fun applyOps(configJson: String, ops: JSONArray): JSONObject? =
-        unwrap(nativeApplyOps(configJson, ops.toString())) { it.optJSONObject("data") }
+        unwrap(nativeApplyOps(configJson.ifEmpty { "{}" }, ops.toString())) { it.optJSONObject("data") }
 
     /** 统一解信封；失败时记录 [lastError] 并返回 null。 */
     private fun <T> unwrap(raw: String, extract: (JSONObject) -> T?): T? {

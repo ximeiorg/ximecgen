@@ -16,9 +16,10 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // 只打包 arm64-v8a（真机目标）。调试用 x86_64 模拟器时临时加回 "x86_64"。
+        // 只打包 arm64-v8a（真机目标）。模拟器调试：-PximeAbis=arm64-v8a,x86_64
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += (findProperty("ximeAbis") as? String ?: "arm64-v8a")
+                .split(",").map { it.trim() }.filter { it.isNotEmpty() }
         }
     }
 
@@ -99,6 +100,13 @@ tasks.matching { it.name == "assembleRelease" }.configureEach {
     finalizedBy(renameReleaseApk)
 }
 
+android {
+    testOptions {
+        // JVM 单测：android.jar 未实现的 API 返回默认值而非抛异常（配合真实 org.json 依赖）
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -113,8 +121,12 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
 
     testImplementation(libs.junit)
+    // JVM 单测使用真实 org.json（android.jar 里的是抛异常的桩）
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    // ModalBottomSheet 在独立窗口，compose 测试语义树看不到——跨窗口断言用 UiAutomator
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)

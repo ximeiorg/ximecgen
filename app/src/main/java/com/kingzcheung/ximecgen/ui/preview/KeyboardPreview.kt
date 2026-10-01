@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,15 +17,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.twotone.KeyboardAlt
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,7 +36,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -61,9 +61,16 @@ data class PreviewBackground(
             ?: (if (isDark) Color(0xFF202125) else Color(0xFFE3E4E8))
 }
 
+/** 功能键内置图标（渲染时映射到 Material 图标），NONE 表示显示文本键面。 */
+enum class PreviewKeyIcon { NONE, SHIFT, DELETE, EARTH, SYMBOL, EMOJI, VOICE }
+
 data class PreviewKeyInfo(
+    val id: String,
     val mainLabel: String,
     val isIcon: Boolean = false,
+    val isFunction: Boolean = false,
+    val icon: PreviewKeyIcon = PreviewKeyIcon.NONE,
+    val width: Float = 1f,
     val swipeUpLabel: String? = null,
     val swipeDownLabel: String? = null,
     val compact: Boolean = false,
@@ -71,7 +78,6 @@ data class PreviewKeyInfo(
 
 data class PreviewData(
     val rows: List<List<PreviewKeyInfo>> = emptyList(),
-    val commaLabel: String = "，",
     val cornerRadius: Int = 8,
     val spacingX: Float = 2f,
     val spacingY: Float = 4.25f,
@@ -85,8 +91,126 @@ data class PreviewData(
     val primary: Color = Color(0xFF8F73E2),
 )
 
-private val DEFAULT_KEYS = listOf("q","w","e","r","t","y","u","i","o","p").let { row0 ->
-    listOf(row0, listOf("a","s","d","f","g","h","j","k","l"), listOf("z","x","c","v","b","n","m"))
+// ── 布局模型：对齐 Xime 3.0（layout.rows 是含功能键的完整可配置行列表）──
+
+/** 可被 layout.rows 引用的功能键 id（对齐 Xime KeysConfigHelper.FUNCTION_KEY_IDS）。 */
+val FUNCTION_KEY_IDS = setOf(
+    "shift", "delete", "enter", "space", "mode_change", "symbol", "emoji", "earth", "voice", "comma",
+)
+
+/** 用普通按键底色的功能键（其余用特殊键底色），对齐 Xime 各 Cell 组件的取色。 */
+private val SOFT_FUNCTION_KEYS = setOf("comma", "earth", "space")
+
+/** 功能键内置列宽：显式 keys.<id>.width 优先（对齐 Xime functionKeyWidth）。 */
+private fun defaultFunctionKeyWidth(id: String): Float = when (id) {
+    "shift", "delete" -> 1.4f
+    "mode_change", "enter" -> 1.2f
+    "earth", "comma" -> 0.8f
+    "space" -> 3f
+    else -> 1f
+}
+
+/**
+ * 无 layout.rows 时的兜底行 = 内置 xime.yaml 的行布局。
+ * Xime 的回退链：custom 的 rows → 内置 xime.yaml 的 rows（含 shift/delete）→
+ * KeysConfigHelper.DEFAULT_ZH_ROWS（裸字母行，仅在连内置配置都缺 rows 时出现）。
+ * 模板类 custom yaml（如小鹤双拼）不写 rows，实际渲染带功能键，因此兜底必须含 shift/delete。
+ */
+private val DEFAULT_ROW_IDS = listOf(
+    listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
+    listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"),
+    listOf("shift", "z", "x", "c", "v", "b", "n", "m", "delete"),
+    listOf("mode_change", "comma", "space", "earth", "enter"),
+)
+
+private const val MAX_ROWS = 5
+
+/**
+ * 解析并规范化 layout.rows（合并键拼接为 id、最多 5 行、缺失行补内置默认），
+ * 供预览与布局编辑器共用。
+ */
+fun layoutRowIds(section: JSONObject?): List<List<String>> = normalizeRows(parseLayoutRows(section))
+
+/** 内置默认行（3 字母行 + 控制行），用于"创建默认行布局"。 */
+fun defaultLayoutRows(): List<List<String>> = DEFAULT_ROW_IDS
+
+/** keys.<id>.width 显式值（>0）优先，否则回退默认。 */
+private fun configuredWidth(keys: JSONObject, id: String, fallback: Float): Float =
+    ((keys.optJSONObject(id)?.opt("width")) as? Number)?.toFloat()?.takeIf { it > 0f } ?: fallback
+
+/**
+ * 解析 keyboard.<section>.layout.rows：每行是 id 列表；子数组为合并键（组内 id 拼接，
+ * 如 [q, w] → "qw"）；整行字符串手动拆分兜底（如 "z, [x, c], v"）。
+ */
+private fun parseLayoutRows(section: JSONObject?): List<List<String>> {
+    val arr = section?.optJSONObject("layout")?.optJSONArray("rows") ?: return emptyList()
+    val rows = mutableListOf<List<String>>()
+    for (i in 0 until arr.length()) {
+        val row = when (val r = arr.opt(i)) {
+            is JSONArray -> (0 until r.length()).mapNotNull { j ->
+                when (val item = r.opt(j)) {
+                    is String -> item.trim().takeIf { it.isNotEmpty() }
+                    is JSONArray -> (0 until item.length())
+                        .mapNotNull { k -> item.optString(k).trim().takeIf { it.isNotEmpty() } }
+                        .joinToString("")
+                        .takeIf { it.isNotEmpty() }
+                    else -> null
+                }
+            }
+            is String -> splitScalarRow(r)
+            else -> emptyList()
+        }
+        if (row.isNotEmpty()) rows.add(row)
+    }
+    return rows
+}
+
+/** 标量行手动拆分：逗号为键分隔，方括号内为合并键组（组内逗号/空格丢弃，[x, c] → xc，对齐 Xime scalarRowToKeyIds）。 */
+private fun splitScalarRow(content: String): List<String> {
+    val text = content.trim()
+    if (text.isEmpty()) return emptyList()
+    if (!text.contains(',') && !text.contains('[')) return listOf(text)
+    val items = mutableListOf<String>()
+    val buf = StringBuilder()
+    var depth = 0
+    fun flushItem() {
+        val t = buf.toString().trim()
+        if (t.isNotEmpty()) items.add(t)
+        buf.clear()
+    }
+    for (ch in text) {
+        when {
+            ch == '[' -> { depth++; if (depth == 1) buf.clear() else buf.append(ch) }
+            ch == ']' -> {
+                depth--
+                when {
+                    depth == 0 -> flushItem()
+                    depth < 0 -> depth = 0
+                    else -> buf.append(ch)
+                }
+            }
+            ch == ',' && depth == 0 -> flushItem()
+            ch == ',' && depth > 0 -> Unit // 组内逗号仅分隔字母，拼接时丢弃
+            ch == ' ' && depth > 0 -> Unit // 组内空格一并丢弃（[x, c] → xc）
+            else -> buf.append(ch)
+        }
+    }
+    flushItem()
+    return items
+}
+
+/**
+ * 规范化行：最多 [MAX_ROWS] 行，缺失行用内置默认补齐（少于 4 行会补出默认控制行），
+ * 空行截断；全部为空时用内置 4 行（对齐 Xime normalizeQwertyRows）。
+ */
+private fun normalizeRows(rows: List<List<String>>): List<List<String>> {
+    val out = mutableListOf<List<String>>()
+    for (i in 0 until MAX_ROWS) {
+        val row = rows.getOrNull(i) ?: DEFAULT_ROW_IDS.getOrNull(i) ?: break
+        if (row.isEmpty()) break
+        out.add(row)
+    }
+    return out.ifEmpty { DEFAULT_ROW_IDS }
 }
 
 /** 从配置 JSON 构建预览数据。dark 决定取深色还是浅色分支。 */
@@ -170,11 +294,6 @@ fun buildPreviewData(configJson: JSONObject, dark: Boolean, keyboardId: String =
 
     // ── 布局与按键 ──
     val qwerty = keyboard?.optJSONObject(keyboardId)
-    val rows = qwerty?.optJSONObject("layout")?.optJSONArray("rows")
-        ?.let { arr -> (0 until arr.length()).take(3).map { arr.optJSONArray(it) } }
-        ?.map { row -> (0 until row.length()).map { row.optString(it) } }
-        ?: DEFAULT_KEYS
-
     val keys = qwerty?.optJSONObject("keys") ?: JSONObject()
     val compact = qwerty?.optString("button_layout", "standard") == "compact"
 
@@ -182,8 +301,7 @@ fun buildPreviewData(configJson: JSONObject, dark: Boolean, keyboardId: String =
 
     val key = keyboard?.optJSONObject("key") ?: JSONObject()
     return PreviewData(
-        rows = rows.map { r -> r.map { keyInfo(it) } },
-        commaLabel = keys.optJSONObject("'")?.let { gestureLabel(it.opt("tap")) } ?: "，",
+        rows = normalizeRows(parseLayoutRows(qwerty)).map { r -> r.map { keyInfo(it) } },
         cornerRadius = key.optInt("corner_radius", 8).coerceIn(0, 48),
         spacingX = key.optDouble("spacing_x", 2.0).toFloat().coerceIn(0f, 24f),
         spacingY = key.optDouble("spacing_y", 4.25).toFloat().coerceIn(0f, 24f),
@@ -204,11 +322,14 @@ private fun JSONObject.optLongOrColor(name: String, fallback: Color? = null): Co
 
 /**
  * 手势绑定 → 键帽显示信息（预览与编辑器共用，保证两边显示一致）：
- * - tap 取 label/value；@ 前缀为图标；单字母大写显示（对齐 Xime）
+ * - 功能键按 id 分派内置图标/标签（可被 keys.<id>.tap 覆盖），见 [functionKeyInfo]
+ * - 字母键 tap 取 label/value；@ 前缀为图标；含字母的显示统一大写（对齐 Xime getKeyDisplayLabel）
  * - display 为 "bubble" 的上滑/下滑手势是按键时弹出的气泡，不印在键面上
  */
 fun keyCapInfo(keys: JSONObject, id: String, compact: Boolean = false): PreviewKeyInfo {
     val binding = keys.optJSONObject(id) ?: JSONObject()
+    if (id in FUNCTION_KEY_IDS) return functionKeyInfo(id, keys, binding, compact)
+
     val tap = binding.opt("tap")
     var main = gestureLabel(tap) ?: id
     var isIcon = false
@@ -216,16 +337,77 @@ fun keyCapInfo(keys: JSONObject, id: String, compact: Boolean = false): PreviewK
         isIcon = true
         main = main.removePrefix("@")
     }
-    if (main.length == 1 && main[0].isLetter()) {
+    if (main.any { c -> c in 'a'..'z' || c in 'A'..'Z' }) {
         main = main.uppercase()
+    }
+    // 上滑/下滑提示保留完整多行文本（如 "ue\nve"），裁剪策略在渲染层按布局模式执行
+    val swipeUp = binding.opt("swipe_up")
+        ?.takeIf { gestureDisplay(it) != "bubble" }
+        ?.let { gestureSurfaceText(it) }?.takeIf { it.isNotBlank() }
+    val swipeDown = binding.opt("swipe_down")
+        ?.takeIf { gestureDisplay(it) != "bubble" }
+        ?.let { gestureSurfaceText(it) }?.takeIf { it.isNotBlank() }
+    return PreviewKeyInfo(
+        id = id,
+        mainLabel = main,
+        isIcon = isIcon,
+        width = configuredWidth(keys, id, 1f),
+        swipeUpLabel = swipeUp,
+        swipeDownLabel = swipeDown,
+        compact = compact,
+    )
+}
+
+/**
+ * 功能键键面信息：内置图标/标签，可被 keys.<id> 覆盖（tap.label / tap.value / width），
+ * 取值规则对齐 Xime FunctionKeyCell 各内置组件。delete 内置"上滑清空"提示。
+ */
+private fun functionKeyInfo(id: String, keys: JSONObject, binding: JSONObject, compact: Boolean): PreviewKeyInfo {
+    val tap = binding.optJSONObject("tap")
+    val label = gestureField(tap, "label")
+    val value = gestureField(tap, "value")
+    var icon = PreviewKeyIcon.NONE
+    var main = ""
+    when (id) {
+        "shift" -> icon = PreviewKeyIcon.SHIFT
+        "delete" -> icon = PreviewKeyIcon.DELETE
+        "mode_change" -> main = label ?: "?123"
+        "enter" -> main = label ?: "换行"
+        // 键面显示 label 优先（对齐 Xime CommaCell：text = label ?: value）
+        "comma" -> main = label ?: value ?: "，"
+        // earth 的 SwipeableKeyButton 恒带地球图标（icon 优先于文本，@ 前缀视为图标名）
+        "earth" -> if (label != null && !label.startsWith("@")) main = label else icon = PreviewKeyIcon.EARTH
+        "space" -> Unit // 渲染时显示方案名
+        "symbol" -> icon = PreviewKeyIcon.SYMBOL
+        "emoji" -> icon = PreviewKeyIcon.EMOJI
+        "voice" -> icon = PreviewKeyIcon.VOICE
     }
     val swipeUp = binding.opt("swipe_up")
         ?.takeIf { gestureDisplay(it) != "bubble" }
         ?.let { gestureLabel(it) }?.takeIf { it.isNotEmpty() }
+        ?: if (id == "delete" && !binding.has("swipe_up")) "清空" else null
     val swipeDown = binding.opt("swipe_down")
         ?.takeIf { gestureDisplay(it) != "bubble" }
         ?.let { gestureLabel(it) }?.takeIf { it.isNotEmpty() }
-    return PreviewKeyInfo(main, isIcon, swipeUp, swipeDown, compact)
+    return PreviewKeyInfo(
+        id = id,
+        mainLabel = main,
+        isFunction = true,
+        icon = icon,
+        width = configuredWidth(keys, id, defaultFunctionKeyWidth(id)),
+        swipeUpLabel = swipeUp,
+        swipeDownLabel = swipeDown,
+        compact = compact,
+    )
+}
+
+/** 手势对象的 label/value 字段，支持字符串与数组（多行 label join("\n")）。 */
+private fun gestureField(tap: JSONObject?, field: String): String? = when (val v = tap?.opt(field)) {
+    is String -> v.trim().takeIf { it.isNotEmpty() }
+    is JSONArray -> (0 until v.length())
+        .mapNotNull { i -> v.opt(i)?.toString() }
+        .joinToString("\n").trim().takeIf { it.isNotEmpty() }
+    else -> null
 }
 
 private fun JSONObject.optColorsArray(name: String): List<Color> {
@@ -235,15 +417,18 @@ private fun JSONObject.optColorsArray(name: String): List<Color> {
 
 private fun gestureLabel(v: Any?): String? = when (v) {
     is String -> v
-    is JSONObject -> sequenceOf("label", "value").mapNotNull { k ->
-        when (val lv = v.opt(k)) {
-            // label 支持数组（多行显示），与 Xime 解析一致：join("\n") 后取首行作键帽提示
-            is org.json.JSONArray -> (0 until lv.length())
-                .mapNotNull { lv.opt(it)?.toString() }
-                .joinToString("\n").ifEmpty { null }
-            else -> lv?.toString()?.ifEmpty { null }
-        }
-    }.firstOrNull()?.lineSequence()?.firstOrNull { it.isNotBlank() }
+    is JSONObject -> sequenceOf("label", "value").mapNotNull { k -> gestureField(v, k) }.firstOrNull()
+        ?.lineSequence()?.firstOrNull { it.isNotBlank() }
+    else -> null
+}
+
+/**
+ * 键面提示的完整文本（保留 "\n" 多行，如小鹤双拼的 "ue\nve"）：
+ * compact 模式下 Xime 按 ≤12 字符多行显示，数据层不得提前截断。
+ */
+private fun gestureSurfaceText(v: Any?): String? = when (v) {
+    is String -> v
+    is JSONObject -> sequenceOf("label", "value").mapNotNull { k -> gestureField(v, k) }.firstOrNull()
     else -> null
 }
 
@@ -260,7 +445,10 @@ private fun Long.toColor(): Color {
 
 /**
  * 高保真键盘预览：布局权重/配色/圆角/阴影对齐 Xime 的 KeyboardLayout + KeyButton。
- * [onKeyClick] 传入时点击按键回调 keyId（第 4 行固定键回传固定 id），用于手势编辑入口。
+ * 行数与行内容完全由 layout.rows 驱动（最多 5 行，含功能键行）——所有按键都可配置，
+ * 无硬编码行；行内按 id 分派功能键/字母键。见 Xime QwertyRow + FunctionKeyCell。
+ *
+ * [onKeyClick] 传入时点击按键回调 keyId，用于手势编辑入口。
  */
 @Composable
 fun KeyboardPreview(
@@ -303,118 +491,49 @@ fun KeyboardPreview(
                 onKeyClick = onKeyClick,
             )
 
-            // ── 4 行按键（等高）──
+            // ── 按键行（等高）──
             // 间距模型对齐 Xime：spacing_x/spacing_y 是每个键四周的 padding，
             // 相邻键水平间隙 = spacing_x*2，行间垂直间隙 = spacing_y*2。
-            // 阴影/裁剪/背景在 KeyCap 内按官方顺序绘制。
-            val keyModifierBase = Modifier.padding(
-                horizontal = preview.spacingX.dp,
-                vertical = preview.spacingY.dp,
-            )
+            // 阴影/裁剪/背景在 KeyCap/FunctionKeyCap 内按官方顺序绘制。
 
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                preview.rows.getOrElse(0) { emptyList() }.forEachIndexed { i, info ->
-                    KeyCap(keyModifierBase, preview, info, Modifier.weight(1f).fillMaxHeight(), dark) {
-                        onKeyClick?.invoke(defaultRow0Keys.getOrElse(i) { "?" })
-                    }
-                }
-            }
-            // 第二行（9 键）：整行左右各缩进 16dp，对齐 Xime KeyboardLayout
-            Row(
-                modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 16.dp),
-            ) {
-                preview.rows.getOrElse(1) { emptyList() }.forEachIndexed { i, info ->
-                    KeyCap(keyModifierBase, preview, info, Modifier.weight(1f).fillMaxHeight(), dark) {
-                        onKeyClick?.invoke(defaultRow1Keys.getOrElse(i) { "?" })
-                    }
-                }
-            }
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(1.4f).fillMaxHeight(),
-                    bg = preview.specialKeyBg, contentColor = preview.keyText,
-                    onClick = { onKeyClick?.invoke("shift_l") },
-                ) {
-                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Shift", tint = preview.keyText)
-                }
+            val firstRowSize = preview.rows.firstOrNull()?.size ?: 10
+            preview.rows.forEach { rowInfos ->
+                // 9 键纯字母行（如 asdf 行）两端缩进、视觉居中；宽度取 9/首行键数比例，
+                // 任意行宽下该行键宽都与首行一致（对齐 Xime KeyboardLayout 的 indent 逻辑）
+                val rowWidth = if (rowInfos.size == 9 && rowInfos.none { it.isFunction }) {
+                    (9f / firstRowSize).coerceIn(0.5f, 1f)
+                } else 1f
                 Row(
-                    modifier = Modifier.weight(7.2f).fillMaxHeight(),
+                    modifier = Modifier
+                        .fillMaxWidth(rowWidth)
+                        .weight(1f)
+                        .align(Alignment.CenterHorizontally),
                 ) {
-                    preview.rows.getOrElse(2) { emptyList() }.forEachIndexed { i, info ->
-                        KeyCap(keyModifierBase, preview, info, Modifier.weight(1f).fillMaxHeight(), dark) {
-                            onKeyClick?.invoke(defaultRow2Keys.getOrElse(i) { "?" })
+                    rowInfos.forEach { info ->
+                        // padding 只叠加一次：KeyCap 的 base 保持裸 Modifier，
+                        // 间距+权重统一在 modifier 上（重复叠加会使列/行间距翻倍）
+                        val keySize = Modifier
+                            .padding(
+                                horizontal = preview.spacingX.dp,
+                                vertical = preview.spacingY.dp,
+                            )
+                            .weight(info.width)
+                            .fillMaxHeight()
+                        if (info.isFunction) {
+                            FunctionKeyCap(preview, info, keySize, schemaName, onKeyClick)
+                        } else {
+                            KeyCap(Modifier, preview, info, keySize, dark) {
+                                onKeyClick?.invoke(info.id)
+                            }
                         }
                     }
                 }
-                // 删除键：浅色=淡紫底+主题色图标；深色=主题色底+白图标（对齐官方）
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(1.4f).fillMaxHeight(),
-                    bg = if (dark) preview.primary else preview.specialKeyBg,
-                    contentColor = if (dark) Color.White else preview.primary,
-                    onClick = { onKeyClick?.invoke("delete") },
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Backspace,
-                        contentDescription = "删除",
-                        tint = if (dark) Color.White else preview.primary,
-                    )
-                }
-            }
-            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(1.2f).fillMaxHeight(),
-                    bg = preview.specialKeyBg, contentColor = preview.keyText,
-                    onClick = { onKeyClick?.invoke("?123") },
-                ) { Text("?123", fontSize = 16.sp, color = preview.keyText) }
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(0.8f).fillMaxHeight(),
-                    bg = preview.keyBg, contentColor = preview.keyText,
-                    onClick = { onKeyClick?.invoke("'") },
-                ) { Text(preview.commaLabel, fontSize = 18.sp, color = preview.keyText) }
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(3.2f).fillMaxHeight(),
-                    bg = preview.keyBg, contentColor = preview.keyText,
-                    onClick = { onKeyClick?.invoke("space") },
-                ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        Text(
-                            "空格",
-                            fontSize = 11.sp,
-                            color = preview.keyText.copy(alpha = 0.45f),
-                            modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp),
-                        )
-                        Text(
-                            schemaName,
-                            fontSize = 16.sp,
-                            color = preview.keyText,
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
-                }
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(0.8f).fillMaxHeight(),
-                    bg = preview.keyBg, contentColor = preview.keyText,
-                    onClick = { onKeyClick?.invoke("earth") },
-                ) {
-                    Icon(Icons.Outlined.Language, contentDescription = "中英切换", tint = preview.keyText)
-                }
-                FixedKey(
-                    preview = preview,
-                    modifier = keyModifierBase.weight(1.2f).fillMaxHeight(),
-                    bg = preview.specialKeyBg, contentColor = preview.keyText,
-                    onClick = { onKeyClick?.invoke("enter") },
-                ) { Text("换行", fontSize = 16.sp, color = preview.keyText) }
             }
         }
     }
 }
 
+/** 候选栏占位（真实输入法此处显示联想结果）。 */
 @Composable
 private fun CandidateStrip(primary: Color, textColor: Color, onKeyClick: ((String) -> Unit)?) {
     Row(
@@ -440,7 +559,6 @@ private fun CandidateStrip(primary: Color, textColor: Color, onKeyClick: ((Strin
             )
         }
         Box(modifier = Modifier.weight(1f))
-        // 占位候选词（真实输入法此处显示联想结果）
         Text("五笔", fontSize = 16.sp, color = textColor, modifier = Modifier.padding(horizontal = 10.dp))
         Text("拼音", fontSize = 16.sp, color = textColor.copy(alpha = 0.75f), modifier = Modifier.padding(horizontal = 10.dp))
         Text("输入法", fontSize = 16.sp, color = textColor.copy(alpha = 0.75f), modifier = Modifier.padding(horizontal = 10.dp))
@@ -451,6 +569,95 @@ private fun CandidateStrip(primary: Color, textColor: Color, onKeyClick: ((Strin
             tint = textColor.copy(alpha = 0.55f),
             modifier = Modifier.size(22.dp),
         )
+    }
+}
+
+/**
+ * 功能键渲染：按 id 分派内置图标/文本（对齐 Xime FunctionKeyCell）。
+ * 取色：comma/earth/space 用普通键底色+按键文字色（Xime SpaceKey/CommaCell/EarthCell），
+ * 其余用特殊键底色，内容颜色按背景亮度自适应（Xime getSpecialKeyTextColorForBackground）。
+ * 预览与布局编辑器共用。
+ */
+@Composable
+fun FunctionKeyCap(
+    preview: PreviewData,
+    info: PreviewKeyInfo,
+    modifier: Modifier,
+    schemaName: String = "五笔拼音",
+    onKeyClick: ((String) -> Unit)? = null,
+) {
+    val soft = info.id in SOFT_FUNCTION_KEYS
+    val bg = if (soft) preview.keyBg else preview.specialKeyBg
+    val contentColor = if (soft || bg.luminance() > 0.5f) preview.keyText else Color(0xFFE8EAED)
+    FixedKey(
+        preview = preview,
+        modifier = modifier,
+        bg = bg,
+        contentColor = contentColor,
+        onClick = { onKeyClick?.invoke(info.id) },
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            when (info.icon) {
+                PreviewKeyIcon.SHIFT ->
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Shift", tint = contentColor)
+                PreviewKeyIcon.DELETE ->
+                    Icon(Icons.AutoMirrored.Filled.Backspace, contentDescription = "删除", tint = contentColor)
+                PreviewKeyIcon.EARTH ->
+                    Icon(Icons.Outlined.Language, contentDescription = "中英切换", tint = contentColor)
+                PreviewKeyIcon.SYMBOL ->
+                    Icon(Icons.TwoTone.KeyboardAlt, contentDescription = "符号", tint = contentColor)
+                PreviewKeyIcon.EMOJI ->
+                    Icon(Icons.Filled.EmojiEmotions, contentDescription = "表情", tint = contentColor)
+                PreviewKeyIcon.VOICE ->
+                    Icon(Icons.Filled.Mic, contentDescription = "语音", tint = contentColor)
+                PreviewKeyIcon.NONE -> if (info.id == "space") {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Text(
+                            "空格",
+                            fontSize = 11.sp,
+                            color = contentColor.copy(alpha = 0.45f),
+                            modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp),
+                        )
+                        Text(
+                            schemaName,
+                            fontSize = 16.sp,
+                            color = contentColor,
+                            modifier = Modifier.align(Alignment.Center),
+                        )
+                    }
+                } else {
+                    Text(
+                        text = info.mainLabel,
+                        color = contentColor,
+                        fontSize = if (info.mainLabel.length > 2) 14.sp else 16.sp,
+                        fontWeight = if (info.mainLabel.length > 2) FontWeight.Medium else FontWeight.Normal,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                    )
+                }
+            }
+            info.swipeUpLabel?.let {
+                Text(
+                    text = it.take(4),
+                    color = contentColor.copy(alpha = 0.6f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    modifier = Modifier.align(Alignment.TopCenter).offset(y = (-4).dp),
+                )
+            }
+            info.swipeDownLabel?.let {
+                Text(
+                    text = it.take(4),
+                    color = contentColor.copy(alpha = 0.5f),
+                    fontSize = 9.sp,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    modifier = Modifier.align(Alignment.BottomCenter).offset(y = 4.dp),
+                )
+            }
+        }
     }
 }
 
@@ -469,6 +676,7 @@ fun KeyCap(
     modifier: Modifier,
     dark: Boolean,
     onLongClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val shadowModifier = if (preview.shadowEnabled) {
@@ -485,9 +693,12 @@ fun KeyCap(
         }
     } else Modifier
 
-    val clickModifier = if (onLongClick != null) {
-        Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
-    } else Modifier.clickable(onClick = onClick)
+    // enabled=false 时不消费点击（如布局模式卡片里的预览键帽，让点击穿透到外层卡片）
+    val clickModifier = when {
+        onLongClick != null -> Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+        enabled -> Modifier.clickable(onClick = onClick)
+        else -> Modifier
+    }
 
     Box(
         modifier = base
@@ -634,9 +845,5 @@ private fun gradientOffsets(angleDegrees: Float): Pair<Offset, Offset> {
     val dy = Math.sin(rad).toFloat()
     return Offset(0.5f - dx / 2, 0.5f - dy / 2) to Offset(0.5f + dx / 2, 0.5f + dy / 2)
 }
-
-private val defaultRow0Keys = listOf("q","w","e","r","t","y","u","i","o","p")
-private val defaultRow1Keys = listOf("a","s","d","f","g","h","j","k","l")
-private val defaultRow2Keys = listOf("z","x","c","v","b","n","m")
 
 private fun PreviewBackground.colorList(isDark: Boolean): List<Color> = if (isDark) dark else light

@@ -23,10 +23,17 @@ const COMMAND_VALUES = [
 const SWITCH_ROUTE_VALUES = ['emoji', 'symbol', 'clipboard']
 const DISPLAY_MODES = ['key', 'bubble', 'both']
 
-const DEFAULT_ROWS = [
+/** 可被 layout.rows 引用的功能键 id（对齐 Xime KeysConfigHelper.FUNCTION_KEY_IDS）。 */
+const FUNCTION_KEY_IDS = new Set([
+  'shift', 'delete', 'enter', 'space', 'mode_change', 'symbol', 'emoji', 'earth', 'voice', 'comma',
+])
+/** 无 layout.rows 时的兜底行 = 内置 xime.yaml 的行布局（Xime 回退链：custom rows →
+    内置 rows（含 shift/delete）→ 裸字母行）。模板类 custom yaml 不写 rows，实际渲染带功能键。 */
+const DEFAULT_ROW_IDS = [
   ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
   ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
-  ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
+  ['shift', 'z', 'x', 'c', 'v', 'b', 'n', 'm', 'delete'],
+  ['mode_change', 'comma', 'space', 'earth', 'enter'],
 ]
 
 interface Props {
@@ -34,10 +41,36 @@ interface Props {
   onDispatch: (ops: unknown[]) => void
 }
 
-/** 键位 id → 键面显示（单字母大写；对象 tap 取 label/value；@ 前缀为图标）。 */
+/** 键位 id → 键面显示（功能键用内置图标/标签，可被 keys.<id>.tap 覆盖；单字母大写）。 */
 function capLabel(keys: any, id: string): string {
   const binding = keys?.[id]
   const tap = binding?.tap
+  const field = (f: string): string | null => {
+    if (!tap || typeof tap !== 'object') return null
+    const v = tap[f]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+    if (Array.isArray(v)) {
+      const s = v.filter(Boolean).join(' ').trim()
+      return s || null
+    }
+    return null
+  }
+  if (FUNCTION_KEY_IDS.has(id)) {
+    const label = field('label')
+    const value = field('value')
+    switch (id) {
+      case 'shift': return '⇧'
+      case 'delete': return '⌫'
+      case 'mode_change': return label ?? '?123'
+      case 'enter': return label ?? '换行'
+      case 'comma': return value ?? label ?? '，'
+      case 'earth': return label && !label.startsWith('@') ? label : '中'
+      case 'space': return label ?? '空格'
+      case 'symbol': return label ?? '⌨'
+      case 'emoji': return label ?? '表情'
+      case 'voice': return label ?? '语音'
+    }
+  }
   let main: string
   if (typeof tap === 'string') {
     main = tap
@@ -49,7 +82,7 @@ function capLabel(keys: any, id: string): string {
   }
   if (!main) main = id
   if (main.startsWith('@')) main = main.slice(1)
-  if (main.length === 1 && /[a-z]/.test(main)) main = main.toUpperCase()
+  if (/[a-z]/i.test(main)) main = main.toUpperCase()
   return main
 }
 
@@ -131,9 +164,10 @@ export function KeyboardGestureEditor({ config, onDispatch }: Props) {
   const qwerty = config?.keyboard?.qwerty ?? {}
   const keys = qwerty.keys ?? {}
   const configured = qwerty.layout?.rows
+  // 展示与预览同源：缺失行补内置默认（含控制行）；编辑操作写回配置
   const rows: (string | string[])[][] = Array.isArray(configured)
     ? configured.slice(0, 5).map((r: unknown) => (Array.isArray(r) ? r : []))
-    : DEFAULT_ROWS
+    : DEFAULT_ROW_IDS
 
   const keysPath = '/keyboard/qwerty/keys'
   const rowsPath = '/keyboard/qwerty/layout/rows'
@@ -168,7 +202,9 @@ export function KeyboardGestureEditor({ config, onDispatch }: Props) {
   }
 
   const addRow = () => {
-    onDispatch([ops.set(rowsPath, [...rows, []])])
+    // 新行用内置默认模板补齐（空行会被输入法截断）
+    const template = DEFAULT_ROW_IDS[rows.length] ?? DEFAULT_ROW_IDS[DEFAULT_ROW_IDS.length - 1]
+    onDispatch([ops.set(rowsPath, [...rows, [...template]])])
   }
 
   const selId = selected

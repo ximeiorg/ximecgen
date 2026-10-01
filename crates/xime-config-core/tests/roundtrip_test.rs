@@ -234,8 +234,8 @@ fn validate_catches_schema_violations() {
     assert!(!paths.iter().any(|p| p.contains("color_schemes/dyn")));
     // 未知动作按 Xime 的行为（只显示不执行）降级为警告
     assert!(result.warnings.iter().any(|w| w.contains("fly_to_moon") && w.contains("只显示不执行")));
-    // 行内未定义的键与 URL 末尾斜杠是警告
-    assert!(result.warnings.iter().any(|w| w.contains("未在 keys 中定义")));
+    // URL 末尾斜杠是警告；行内未定义的键走内置默认，是正常用法不告警
+    assert!(!result.warnings.iter().any(|w| w.contains("未在 keys 中定义")));
     assert!(result.warnings.iter().any(|w| w.contains("末尾建议带 /")));
     // ARGB 颜色（带 alpha）不应被判为非法
     let mut ok_config = serde_json::json!({

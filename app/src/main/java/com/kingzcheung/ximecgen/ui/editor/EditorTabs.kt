@@ -69,10 +69,14 @@ import com.kingzcheung.ximecgen.ui.editor.components.GESTURE_ACTIONS
 import com.kingzcheung.ximecgen.ui.editor.components.BoolRow
 import com.kingzcheung.ximecgen.ui.editor.components.GestureEditorSheet
 import com.kingzcheung.ximecgen.ui.editor.components.SliderRow
+import com.kingzcheung.ximecgen.ui.preview.FUNCTION_KEY_IDS
+import com.kingzcheung.ximecgen.ui.preview.FunctionKeyCap
 import com.kingzcheung.ximecgen.ui.preview.KeyCap
 import com.kingzcheung.ximecgen.ui.preview.PreviewKeyInfo
 import com.kingzcheung.ximecgen.ui.preview.buildPreviewData
+import com.kingzcheung.ximecgen.ui.preview.defaultLayoutRows
 import com.kingzcheung.ximecgen.ui.preview.keyCapInfo
+import com.kingzcheung.ximecgen.ui.preview.layoutRowIds
 import com.kingzcheung.ximecgen.vm.ConfigUiState
 import com.kingzcheung.ximecgen.vm.ConfigViewModel
 import com.kingzcheung.ximecgen.vm.Ops
@@ -801,12 +805,14 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
                     onClick = { vm.setField("/keyboard/$keyboardId/button_layout", "standard") },
                 ) {
                     // 标准：主文字居中，上滑提示在顶部（真实键帽渲染）
+                    // enabled=false：键帽不消费点击，整张卡片任意位置都能选中
                     KeyCap(
                         base = Modifier,
                         preview = preview,
-                        info = PreviewKeyInfo(mainLabel = "A", swipeUpLabel = "1"),
+                        info = PreviewKeyInfo(id = "a", mainLabel = "A", swipeUpLabel = "1"),
                         modifier = Modifier.size(width = 68.dp, height = 56.dp),
                         dark = dark,
+                        enabled = false,
                         onClick = {},
                     )
                 }
@@ -819,9 +825,10 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
                     KeyCap(
                         base = Modifier,
                         preview = preview,
-                        info = PreviewKeyInfo(mainLabel = "A", swipeUpLabel = "1", swipeDownLabel = "工", compact = true),
+                        info = PreviewKeyInfo(id = "a", mainLabel = "A", swipeUpLabel = "1", swipeDownLabel = "工", compact = true),
                         modifier = Modifier.size(width = 68.dp, height = 56.dp),
                         dark = dark,
+                        enabled = false,
                         onClick = {},
                     )
                 }
@@ -830,16 +837,20 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
 
         if (isQwertyLike) {
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            Text("行布局（3 行可配置，第 4 行固定）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 16.dp))
+            Text("行布局（layout.rows，全部行可配置）", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 16.dp))
             Text(
-                "按真实键盘渲染，点击键位即可编辑。",
+                "行内可混合功能键与字母键（对齐 Xime 3.0，最多 5 行）；点击键位编辑手势。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
-            val rows = layout.optJSONObject("layout")?.optJSONArray("rows")
-            if (rows != null) {
+            val rowsArr = layout.optJSONObject("layout")?.optJSONArray("rows")
+            if (rowsArr != null) {
                 val compact = layout.optString("button_layout", "standard").ifEmpty { "standard" } == "compact"
+                // 展示与预览同源（缺失行补内置默认、合并键拼接）；编辑操作只作用于配置中真实存在的行
+                val configuredRowCount = rowsArr.length()
+                val rowIds = remember(layout.toString()) { layoutRowIds(layout) }
+                val firstRowSize = rowIds.firstOrNull()?.size ?: 10
                 // 整块迷你键盘渲染（与预览同源配色/圆角/间距/阴影），所见即所得
                 Box(
                     Modifier
@@ -850,45 +861,75 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
                         .padding(horizontal = 2.dp, vertical = 2.dp),
                 ) {
                     Column {
-                        (0 until rows.length()).take(3).forEach { ri ->
-                            val rowKeys = rows.optJSONArray(ri) ?: JSONArray()
-                            // 对齐 Xime：第二行整行左右缩进 16dp；
+                        rowIds.forEachIndexed { ri, ids ->
+                            // 9 键纯字母行整行居中缩进（与预览同款）
+                            val rowWidth = if (ids.size == 9 && ids.none { it in FUNCTION_KEY_IDS }) {
+                                (9f / firstRowSize).coerceIn(0.5f, 1f)
+                            } else 1f
                             // 行高 56dp 使键帽视觉高度（扣 spacing_y）≈ 预览/真机的 47dp
                             Row(
-                                Modifier.fillMaxWidth().height(56.dp)
-                                    .padding(horizontal = if (ri == 1) 12.dp else 0.dp),
+                                Modifier.fillMaxWidth(rowWidth).height(56.dp)
+                                    .align(Alignment.CenterHorizontally),
                             ) {
-                                (0 until rowKeys.length()).forEach { ki ->
-                                    val keyId = rowKeys.optString(ki)
-                                    KeyCap(
-                                        base = Modifier.padding(
+                                ids.forEachIndexed { ki, keyId ->
+                                    val info = keyCapInfo(keys, keyId, compact)
+                                    val keyMod = Modifier
+                                        .padding(
                                             horizontal = preview.spacingX.dp,
                                             vertical = preview.spacingY.dp,
-                                        ),
-                                        preview = preview,
-                                        // 与预览同一份键面逻辑（display=bubble 不上键面、@图标、大写）
-                                        info = keyCapInfo(keys, keyId, compact),
-                                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                                        dark = dark,
-                                        onClick = { editingKey = keyId },
-                                        onLongClick = { manageTarget = ri to ki },
-                                    )
+                                        )
+                                        .weight(info.width)
+                                        .fillMaxHeight()
+                                    if (info.isFunction) {
+                                        FunctionKeyCap(
+                                            preview = preview,
+                                            info = info,
+                                            modifier = keyMod,
+                                            onKeyClick = { editingKey = keyId },
+                                        )
+                                    } else {
+                                        KeyCap(
+                                            base = keyMod,
+                                            preview = preview,
+                                            // 与预览同一份键面逻辑（display=bubble 不上键面、@图标、大写）
+                                            info = info,
+                                            modifier = Modifier,
+                                            dark = dark,
+                                            onClick = { editingKey = keyId },
+                                            onLongClick = if (ri < configuredRowCount) {
+                                                { manageTarget = ri to ki }
+                                            } else null,
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 Text(
-                    "点键改手势 · 长按移动 / 移除",
+                    "点键改手势 · 长按移动 / 移除（补充行来自内置默认，写入配置后才可调整）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp, 4.dp, 16.dp, 0.dp),
                 )
                 WrapRow(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-                    (0 until rows.length()).take(3).forEach { ri ->
-                        TextButton(onClick = { addKeyTargetRow = ri; addKeyDialog = true }) {
+                    rowIds.indices.forEach { ri ->
+                        TextButton(
+                            enabled = ri < configuredRowCount,
+                            onClick = { addKeyTargetRow = ri; addKeyDialog = true },
+                        ) {
                             Text("＋ 第 ${ri + 1} 行")
                         }
+                    }
+                    if (configuredRowCount < 5) {
+                        TextButton(onClick = {
+                            val template = defaultLayoutRows().getOrElse(configuredRowCount) {
+                                defaultLayoutRows().last()
+                            }
+                            val newRow = JSONArray()
+                            template.forEach { newRow.put(it) }
+                            dispatch(vm, Ops.add("/keyboard/$keyboardId/layout/rows/-", newRow))
+                        }) { Text("＋ 新行") }
                     }
                 }
             } else {
@@ -899,9 +940,11 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
             )
             TextButton(onClick = {
                 val def = JSONArray()
-                    .put(JSONArray(defaultRow0()))
-                    .put(JSONArray(defaultRow1()))
-                    .put(JSONArray(defaultRow2()))
+                defaultLayoutRows().forEach { row ->
+                    val r = JSONArray()
+                    row.forEach { r.put(it) }
+                    def.put(r)
+                }
                 dispatch(vm, Ops.set("/keyboard/$keyboardId/layout/rows", def))
             }) { Text("  创建默认行布局", modifier = Modifier.padding(horizontal = 16.dp)) }
         }
@@ -964,7 +1007,7 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
                                     vertical = preview.spacingY.dp,
                                 ),
                                 preview = preview,
-                                info = PreviewKeyInfo(mainLabel = sideSymbols.optString(i)),
+                                info = PreviewKeyInfo(id = sideSymbols.optString(i), mainLabel = sideSymbols.optString(i)),
                                 modifier = Modifier.size(width = 44.dp, height = 48.dp),
                                 dark = dark,
                                 onClick = {},
@@ -1008,15 +1051,24 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
         )
     }
 
-    // 长按键位：手势编辑 / 左移 / 右移 / 移除
+    // 长按键位：手势编辑 / 左移 / 右移 / 移除（操作原始行元素，保留合并键子数组）
     manageTarget?.let { (ri, ki) ->
         val rowsArr = layout.optJSONObject("layout")?.optJSONArray("rows")
-        val rowKeys = rowsArr?.optJSONArray(ri) ?: JSONArray()
-        val len = rowKeys.length()
-        val keyId = rowKeys.optString(ki)
-        fun sendRow(newIds: List<String>) {
+        val rowItems = rowsArr?.optJSONArray(ri) ?: JSONArray()
+        val len = rowItems.length()
+        fun rawId(item: Any?): String = when (item) {
+            is JSONArray -> (0 until item.length())
+                .mapNotNull { item.optString(it).trim().takeIf { s -> s.isNotEmpty() } }
+                .joinToString("")
+            is String -> item.trim()
+            else -> "?"
+        }
+        val keyId = rawId(rowItems.opt(ki))
+        fun sendRow(newItems: List<Any?>) {
             val newRow = JSONArray()
-            newIds.forEach { newRow.put(it) }
+            newItems.forEach { item ->
+                if (item is JSONArray) newRow.put(item) else newRow.put(item.toString())
+            }
             dispatch(vm, Ops.set("/keyboard/$keyboardId/layout/rows/$ri", newRow))
         }
         AlertDialog(
@@ -1031,27 +1083,27 @@ fun LayoutTab(state: ConfigUiState, vm: ConfigViewModel) {
                     TextButton(
                         enabled = ki > 0,
                         onClick = {
-                            val ids = (0 until len).map { rowKeys.optString(it) }.toMutableList()
-                            val tmp = ids[ki]
-                            ids[ki] = ids[ki - 1]
-                            ids[ki - 1] = tmp
-                            sendRow(ids)
+                            val items = (0 until len).map { rowItems.opt(it) }.toMutableList()
+                            val tmp = items[ki]
+                            items[ki] = items[ki - 1]
+                            items[ki - 1] = tmp
+                            sendRow(items)
                             manageTarget = null
                         },
                     ) { Text("← 左移") }
                     TextButton(
                         enabled = ki < len - 1,
                         onClick = {
-                            val ids = (0 until len).map { rowKeys.optString(it) }.toMutableList()
-                            val tmp = ids[ki]
-                            ids[ki] = ids[ki + 1]
-                            ids[ki + 1] = tmp
-                            sendRow(ids)
+                            val items = (0 until len).map { rowItems.opt(it) }.toMutableList()
+                            val tmp = items[ki]
+                            items[ki] = items[ki + 1]
+                            items[ki + 1] = tmp
+                            sendRow(items)
                             manageTarget = null
                         },
                     ) { Text("右移 →") }
                     TextButton(onClick = {
-                        sendRow((0 until len).filter { it != ki }.map { rowKeys.optString(it) })
+                        sendRow((0 until len).filter { it != ki }.map { rowItems.opt(it) })
                         manageTarget = null
                     }) { Text("从行中移除", color = MaterialTheme.colorScheme.error) }
                 }
@@ -1169,8 +1221,4 @@ private fun layoutLabel(id: String) = when (id) {
     "t9" -> "九键 (T9)"
     else -> id
 }
-
-private fun defaultRow0() = listOf("q","w","e","r","t","y","u","i","o","p")
-private fun defaultRow1() = listOf("a","s","d","f","g","h","j","k","l")
-private fun defaultRow2() = listOf("z","x","c","v","b","n","m")
 

@@ -67,24 +67,29 @@ npm run dev      # 或 npm run build
 GitHub Actions 自动完成：Rust 交叉编译 → Gradle release 构建（R8 混淆、arm64-v8a）→
 上传 artifact 并附带到 GitHub Release。产物命名 `ximecgen-<版本>-arm64-v8a.apk`。
 
-**签名（可选但推荐）**：在仓库 Settings → Secrets and variables → Actions 配置四个 secret：
+签名通过仓库 Secrets（`KEYSTORE_FILE`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD`）配置，
+细节不在此文档展开；未配置 Secrets 时 CI 产出未签名 APK。
 
-| Secret | 说明 |
-|---|---|
-| `KEYSTORE_FILE` | keystore 文件的 base64（`base64 -w0 release.keystore`） |
-| `KEYSTORE_PASSWORD` | keystore 密码 |
-| `KEY_ALIAS` | 别名 |
-| `KEY_PASSWORD` | key 密码 |
+## 测试
 
-配置后 CI 产物为已签名 APK，可直接安装；未配置时产出未签名 APK，需手动签名：
+四层测试，全部本地可跑：
 
 ```bash
-# 本地生成发布 keystore
-keytool -genkeypair -v -keystore release.keystore -storetype PKCS12 \
-  -alias ximecgen -keyalg RSA -keysize 2048 -validity 10000
+# Rust 核心（解析/校验/ops/往返 + 编辑器操作流集成测试）
+cargo test -p xime-config-core
 
-# 本地手动签名未签名产物
-apksigner sign --ks release.keystore --out signed.apk ximecgen-1.0.0-arm64-v8a.apk
+# Android JVM 单测（预览取色/rows 解析/键面信息/模板索引解析/ops 构造）
+./gradlew :app:testDebugUnitTest
+
+# Android Compose UI 测试（需连接设备/模拟器：功能键渲染、布局模式点击穿透、手势 Sheet）
+./gradlew connectedDebugAndroidTest
+
+# Web 单测（Vitest + Testing Library：调色板/模板索引/预览渲染/手势编辑器交互）
+cd web && npm test
+
+# Web e2e（Playwright；首次需 npx playwright install chromium）
+cd web && npm run test:e2e
 ```
 
-本地构建签名包：`KEYSTORE_FILE=... KEYSTORE_PASSWORD=... KEY_ALIAS=... KEY_PASSWORD=... ./gradlew assembleRelease`
+Web e2e 通过 `page.route` 拦截 `index.ximei.me` 与模板 CDN（fixtures 在 `web/e2e/fixtures/`），
+覆盖启动加载、模板切换、编辑联动、Raw YAML 解析错误、导出下载与校验面板，无需真实网络。
